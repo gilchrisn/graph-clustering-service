@@ -1,0 +1,6 @@
+{
+  "id": "author_coauthorship",
+  "node_sequence": ["Author", "Paper", "Author"],
+  "edge_sequence": ["writes", "writes"],
+  "description": "Authors connected through co-authored papers"
+}
