@@ -127,7 +127,7 @@ func (fw *FileWriter) WriteHierarchy(result *LouvainResult, path string) error {
 			
 			// Write sub-communities (nodes from previous level)
 			// Need to map these to their community IDs from previous level
-			prevLevel := result.Levels[level-1]
+			// prevLevel := result.Levels[level-1]
 			subComms := make(map[int]bool)
 			
 			for _, node := range nodes {
