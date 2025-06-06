@@ -1,0 +1,46 @@
+{
+  "nodes": {
+    "alice": {
+      "type": "Author",
+      "name": "Alice Smith"
+    },
+    "bob": {
+      "type": "Author", 
+      "name": "Bob Johnson"
+    },
+    "carol": {
+      "type": "Author",
+      "name": "Carol Williams"
+    },
+    "paper1": {
+      "type": "Paper",
+      "title": "Deep Learning in NLP"
+    },
+    "paper2": {
+      "type": "Paper", 
+      "title": "Graph Neural Networks"
+    },
+    "paper3": {
+      "type": "Paper",
+      "title": "Computer Vision Advances"
+    },
+    "icml": {
+      "type": "Venue",
+      "name": "ICML"
+    },
+    "neurips": {
+      "type": "Venue",
+      "name": "NeurIPS"
+    }
+  },
+  "edges": [
+    {"from": "alice", "to": "paper1", "type": "writes", "weight": 1.0},
+    {"from": "paper1", "to": "icml", "type": "published_in", "weight": 1.0},
+    
+    {"from": "bob", "to": "paper2", "type": "writes", "weight": 1.0},
+    {"from": "paper2", "to": "icml", "type": "published_in", "weight": 1.0},
+    
+    {"from": "carol", "to": "paper3", "type": "writes", "weight": 1.0},
+    {"from": "paper3", "to": "neurips", "type": "published_in", "weight": 1.0}
+  ]
+}

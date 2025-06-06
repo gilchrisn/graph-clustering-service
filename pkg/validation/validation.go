@@ -354,15 +354,6 @@ func ValidateMetaPathAgainstGraph(metaPath *models.MetaPath, graph *models.Heter
 		})
 	}
 
-	// Check if at least one instance of the meta path exists
-	instanceCount := countMetaPathInstances(metaPath, graph)
-	if instanceCount == 0 {
-		errors = append(errors, models.ValidationError{
-			Field:   "meta_path_instances",
-			Message: "no instances of this meta path found in the graph",
-		})
-	}
-
 	if len(errors) > 0 {
 		return errors
 	}
@@ -401,56 +392,6 @@ func validateMetaPathTransitions(metaPath *models.MetaPath, graph *models.Hetero
 	return nil
 }
 
-// countMetaPathInstances counts how many instances of the meta path exist
-func countMetaPathInstances(metaPath *models.MetaPath, graph *models.HeterogeneousGraph) int {
-	// Find all starting nodes (nodes of the first type in meta path)
-	startNodeType := metaPath.NodeSequence[0]
-	startNodes := graph.GetNodesByType(startNodeType)
-
-	instanceCount := 0
-
-	// For each starting node, try to traverse the meta path
-	for _, startNode := range startNodes {
-		count := traverseMetaPath(startNode.ID, 0, metaPath, graph, make(map[string]bool))
-		instanceCount += count
-	}
-
-	return instanceCount
-}
-
-// traverseMetaPath recursively traverses the meta path from a given node
-func traverseMetaPath(currentNodeID string, step int, metaPath *models.MetaPath, 
-	graph *models.HeterogeneousGraph, visited map[string]bool) int {
-	
-	// If we've completed the meta path, we found one instance
-	if step >= len(metaPath.EdgeSequence) {
-		return 1
-	}
-
-	// Avoid cycles in the same path instance
-	if visited[currentNodeID] {
-		return 0
-	}
-
-	visited[currentNodeID] = true
-	defer delete(visited, currentNodeID)
-
-	count := 0
-	requiredEdgeType := metaPath.EdgeSequence[step]
-	requiredNextNodeType := metaPath.NodeSequence[step+1]
-
-	// Find all valid next nodes
-	for _, edge := range graph.Edges {
-		if edge.From == currentNodeID && edge.Type == requiredEdgeType {
-			nextNode, exists := graph.Nodes[edge.To]
-			if exists && nextNode.Type == requiredNextNodeType {
-				count += traverseMetaPath(edge.To, step+1, metaPath, graph, visited)
-			}
-		}
-	}
-
-	return count
-}
 
 // ValidateFileFormat checks if files have correct extensions and are readable
 func ValidateFileFormat(filePath string) error {
