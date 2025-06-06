@@ -263,7 +263,7 @@ func (s *LouvainState) GetModularity() float64 {
 	}
 	
 	q := 0.0
-	m2 := s.Graph.TotalWeight
+	m2 := 2 * s.Graph.TotalWeight  // Factor of 2 here, OR divide 'in' by 2
 	
 	for comm, tot := range s.Tot {
 		if tot > 0 {
