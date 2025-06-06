@@ -1,6 +1,0 @@
-{
-  "id": "author_venue_collaboration",
-  "node_sequence": ["Author", "Paper", "Venue"],
-  "edge_sequence": ["writes", "published_in"],
-  "description": "Authors connected through shared publication venues"
-}
