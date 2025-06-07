@@ -46,10 +46,14 @@ func RunLouvain(graph *HomogeneousGraph, config LouvainConfig) (*LouvainResult, 
 		
 		// Execute one level
 		improvement, err := state.ExecuteOneLevel()
+		
+
+
 		if err != nil {
 			return nil, fmt.Errorf("error at level %d: %w", level, err)
 		}
-		
+
+
 		// Record level info
 		levelInfo := state.GetLevelInfo(level)
 		result.Levels = append(result.Levels, levelInfo)
@@ -66,6 +70,8 @@ func RunLouvain(graph *HomogeneousGraph, config LouvainConfig) (*LouvainResult, 
 		result.Statistics.LevelStats = append(result.Statistics.LevelStats, levelStats)
 		result.Statistics.TotalIterations += levelStats.Iterations
 		result.Statistics.TotalMoves += levelStats.Moves
+
+
 		
 		if !improvement {
 			break
@@ -93,7 +99,7 @@ func RunLouvain(graph *HomogeneousGraph, config LouvainConfig) (*LouvainResult, 
 	result.FinalCommunities = state.GetFinalCommunities()
 	result.Statistics.RuntimeMS = time.Since(startTime).Milliseconds()
 	result.Statistics.MemoryPeakMB = getMemoryUsage()
-	
+
 	return result, nil
 }
 
@@ -286,6 +292,12 @@ func (s *LouvainState) removeNodeFromCommunity(node string, comm int) {
 	
 	s.Tot[comm] -= degree
 	s.In[comm] -= 2*weightToComm + selfLoop
+
+    if len(s.C2N[comm]) == 0 {
+        delete(s.C2N, comm)
+        delete(s.In, comm) 
+        delete(s.Tot, comm)
+    }
 }
 
 // insertNodeIntoCommunity inserts a node into a community
@@ -314,8 +326,8 @@ func (s *LouvainState) insertNodeIntoCommunity(node string, comm int) {
 func (s *LouvainState) modularityGain(node string, comm int, dnodecomm float64) float64 {
 	totc := s.Tot[comm]
 	degc := s.Graph.GetNodeDegree(node)
-	m2 := s.Graph.TotalWeight
-	
+	m2 := 2 * s.Graph.TotalWeight
+
 	if m2 == 0 {
 		return 0
 	}

@@ -6,11 +6,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"github.com/gilchrisn/graph-clustering-service/pkg/louvain"
-
 )
 
+import "github.com/gilchrisn/graph-clustering-service/pkg/louvain"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -41,6 +39,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	
+
 	fmt.Printf("Graph loaded: %d nodes, %d edges\n", 
 		len(graph.Nodes), len(graph.Edges)/2) // Divide by 2 because edges are bidirectional
 
@@ -51,7 +51,7 @@ func main() {
 	}
 
 	// Configure Louvain algorithm
-	config := DefaultLouvainConfig()
+	config := louvain.DefaultLouvainConfig()
 	config.Verbose = true
 	config.RandomSeed = 42 // For reproducible results
 	config.ProgressCallback = func(level, iteration int, message string) {
@@ -65,7 +65,7 @@ func main() {
 	fmt.Println("\nRunning Louvain algorithm...")
 	
 	// Run Louvain algorithm
-	result, err := RunLouvain(graph, config)
+	result, err := louvain.RunLouvain(graph, config)
 	if err != nil {
 		fmt.Printf("Louvain algorithm failed: %v\n", err)
 		os.Exit(1)
@@ -80,23 +80,23 @@ func main() {
 	fmt.Printf("Total moves: %d\n", result.Statistics.TotalMoves)
 
 	// Print community information for each level
-	for i, level := range result.Levels {
-		fmt.Printf("\nLevel %d:\n", level.Level)
-		fmt.Printf("  Communities: %d\n", level.NumCommunities)
-		fmt.Printf("  Modularity: %.6f\n", level.Modularity)
-		fmt.Printf("  Moves: %d\n", level.NumMoves)
+	// for _, level := range result.Levels {
+	// 	fmt.Printf("\nLevel %d:\n", level.Level)
+	// 	fmt.Printf("  Communities: %d\n", level.NumCommunities)
+	// 	fmt.Printf("  Modularity: %.6f\n", level.Modularity)
+	// 	fmt.Printf("  Moves: %d\n", level.NumMoves)
 		
-		// Print actual communities
-		fmt.Printf("  Community assignments:\n")
-		for commID, nodes := range level.Communities {
-			fmt.Printf("    Community %d: %v\n", commID, nodes)
-		}
-	}
+	// 	// Print actual communities
+	// 	fmt.Printf("  Community assignments:\n")
+	// 	for commID, nodes := range level.Communities {
+	// 		fmt.Printf("    Community %d: %v\n", commID, nodes)
+	// 	}
+	// }
 
 	// Write output files
 	fmt.Printf("\nWriting output files to %s...\n", outputDir)
 	
-	writer := NewFileWriter()
+	writer := louvain.NewFileWriter()
 	err = writer.WriteAll(result, graph, outputDir, outputPrefix)
 	if err != nil {
 		fmt.Printf("Error writing output files: %v\n", err)
@@ -111,14 +111,14 @@ func main() {
 }
 
 // readEdgeListFile reads a graph from an edge list file
-func readEdgeListFile(filename string) (*HomogeneousGraph, error) {
+func readEdgeListFile(filename string) (*louvain.HomogeneousGraph, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	graph := NewHomogeneousGraph()
+	graph := louvain.NewHomogeneousGraph()
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
 
@@ -169,6 +169,8 @@ func readEdgeListFile(filename string) (*HomogeneousGraph, error) {
 				return nil, fmt.Errorf("invalid weight on line %d: %v", lineNum, err)
 			}
 		}
+
+		// fmt.Printf("Adding edge: %s -> %s (weight: %.2f)\n", from, to, weight)
 
 		// Add edge to graph (this will also add nodes if they don't exist)
 		graph.AddEdge(from, to, weight)

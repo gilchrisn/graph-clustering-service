@@ -69,6 +69,7 @@ type LevelInfo struct {
 	Modularity     float64              `json:"modularity"`
 	NumCommunities int                  `json:"num_communities"`
 	NumMoves       int                  `json:"num_moves"`
+	
 }
 
 // LouvainStats contains statistics about the algorithm execution
@@ -103,7 +104,7 @@ type NeighborWeight struct {
 func DefaultLouvainConfig() LouvainConfig {
 	return LouvainConfig{
 		MaxCommunitySize: 0,        // No limit by default
-		MinModularity:    0.0001,   // Same as C++ precision
+		MinModularity:    0.0,   
 		MaxIterations:    100,      
 		NumWorkers:       4,
 		ChunkSize:        32,

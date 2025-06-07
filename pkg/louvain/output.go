@@ -27,6 +27,9 @@ func NewFileWriter() OutputWriter {
 
 // WriteAll writes all output files
 func (fw *FileWriter) WriteAll(result *LouvainResult, originalGraph *HomogeneousGraph, outputDir string, prefix string) error {
+	// Add this right before the return statement:
+
+
 	// Create output directory if it doesn't exist
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
@@ -259,27 +262,30 @@ func (fw *FileWriter) WriteEdges(result *LouvainResult, originalGraph *Homogeneo
 
 // getOriginalNodes recursively gets all original nodes in a community
 func (fw *FileWriter) getOriginalNodes(result *LouvainResult, commID int, level int) []string {
-	if level == 0 {
-		// Base case: return nodes directly
-		return result.Levels[0].Communities[commID]
+    if level == 0 {
+        nodes := result.Levels[0].Communities[commID]
+        if nodes == nil {
+            fmt.Printf("DEBUG: Level 0 community %d DOES NOT EXIST\n", commID)
+            return []string{}
+        }
+        return nodes
 	}
 	
-	// Recursive case: get nodes from sub-communities
 	var originalNodes []string
 	nodes := result.Levels[level].Communities[commID]
 	
+	
 	for _, node := range nodes {
 		if strings.HasPrefix(node, "c") {
-			// This is a community from previous level
 			var subCommID int
 			fmt.Sscanf(node, "c%d", &subCommID)
 			subNodes := fw.getOriginalNodes(result, subCommID, level-1)
 			originalNodes = append(originalNodes, subNodes...)
 		} else {
-			// This is an original node
 			originalNodes = append(originalNodes, node)
 		}
 	}
-	
+
+		
 	return originalNodes
 }
