@@ -27,8 +27,15 @@ func NewFileWriter() OutputWriter {
 
 // WriteAll writes all output files
 func (fw *FileWriter) WriteAll(result *LouvainResult, originalGraph *HomogeneousGraph, outputDir string, prefix string) error {
-	// Add this right before the return statement:
-
+	// Find empty communities in result for all levels
+	for level, levelInfo := range result.Levels {
+		fmt.Printf("DEBUG: Level %d has %d communities\n\n", level, len(levelInfo.Communities))
+		for commID, nodes := range levelInfo.Communities {
+			if len(nodes) == 0 {
+				fmt.Printf("DEBUG: Level %d community %d is empty\n", level, commID)
+			}
+		}
+	}
 
 	// Create output directory if it doesn't exist
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -79,12 +86,15 @@ func (fw *FileWriter) WriteMapping(result *LouvainResult, originalGraph *Homogen
 		communityIDs = append(communityIDs, commID)
 	}
 	sort.Ints(communityIDs)
+
+
+	var nodeCount int
 	
 	// Write each community and its original nodes
 	for _, commID := range communityIDs {
 		// Get all original nodes in this top-level community
 		originalNodes := fw.getOriginalNodes(result, commID, len(result.Levels)-1)
-		
+		nodeCount += len(originalNodes)
 		// Sort nodes for consistent output
 		sort.Strings(originalNodes)
 		
@@ -98,6 +108,8 @@ func (fw *FileWriter) WriteMapping(result *LouvainResult, originalGraph *Homogen
 		}
 	}
 	
+	// Write total number of nodes
+	fmt.Printf("Total nodes: %d\n", nodeCount)
 	return nil
 }
 
@@ -262,10 +274,12 @@ func (fw *FileWriter) WriteEdges(result *LouvainResult, originalGraph *Homogeneo
 
 // getOriginalNodes recursively gets all original nodes in a community
 func (fw *FileWriter) getOriginalNodes(result *LouvainResult, commID int, level int) []string {
+	// fmt.Printf("commId: %d, level: %d\n", commID, level)
     if level == 0 {
         nodes := result.Levels[0].Communities[commID]
+		// fmt.Printf("DEBUG: Level 0 community %d has nodes: %v\n", commID, nodes)
         if nodes == nil {
-            fmt.Printf("DEBUG: Level 0 community %d DOES NOT EXIST\n", commID)
+            // fmt.Printf("DEBUG: Level 0 community %d DOES NOT EXIST\n", commID)
             return []string{}
         }
         return nodes
@@ -273,8 +287,12 @@ func (fw *FileWriter) getOriginalNodes(result *LouvainResult, commID int, level 
 	
 	var originalNodes []string
 	nodes := result.Levels[level].Communities[commID]
-	
-	
+
+	if nodes == nil {
+		fmt.Printf("I don't exist at level %d with community ID %d\n", level, commID)
+		return []string{}
+	}
+
 	for _, node := range nodes {
 		if strings.HasPrefix(node, "c") {
 			var subCommID int
@@ -285,6 +303,7 @@ func (fw *FileWriter) getOriginalNodes(result *LouvainResult, commID int, level 
 			originalNodes = append(originalNodes, node)
 		}
 	}
+
 
 		
 	return originalNodes

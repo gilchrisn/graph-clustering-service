@@ -69,11 +69,6 @@ func (me *MaterializationEngine) Materialize() (*MaterializationResult, error) {
 		return me.createErrorResult(fmt.Errorf("failed to generate instances: %w", err))
 	}
 
-	// Print all instances for debugging
-	for _, instance := range instances {
-		fmt.Println(instance)
-	}
-	
 	me.reportProgress(len(instances), estimatedInstances, "Instances generated, building homogeneous graph...")
 	
 	// Build homogeneous graph from instances
@@ -82,15 +77,6 @@ func (me *MaterializationEngine) Materialize() (*MaterializationResult, error) {
 		return me.createErrorResult(fmt.Errorf("failed to build homogeneous graph: %w", err))
 	}
 
-	// Print homogeneous graph for debugging
-	fmt.Println("Homogeneous Graph:")
-	for _, node := range homogeneousGraph.Nodes {
-		fmt.Printf("Node: %s, Type: %s\n", node.ID, node.Type)
-	}
-	for edgeKey, weight := range homogeneousGraph.Edges {
-		fmt.Printf("Edge: %s ↔ %s, Weight: %.2f\n", edgeKey.From, edgeKey.To, weight)
-	}
-	
 	me.reportProgress(estimatedInstances, estimatedInstances, "Materialization complete!")
 	
 	// Create final result

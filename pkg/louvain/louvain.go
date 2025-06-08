@@ -83,6 +83,7 @@ func RunLouvain(graph *HomogeneousGraph, config LouvainConfig) (*LouvainResult, 
 			return nil, fmt.Errorf("error creating super graph at level %d: %w", level, err)
 		}
 		
+		
 		// Check if we've converged
 		if len(superGraph.Nodes) >= len(state.Graph.Nodes) {
 			break
@@ -150,6 +151,7 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 	
 	for {
 		s.Iteration++
+		fmt.Printf("Iteration %d starting with %d communities\n", s.Iteration, len(s.C2N))
 		iterMoves := 0
 		
 		// Create random order for nodes
@@ -337,26 +339,17 @@ func (s *LouvainState) modularityGain(node string, comm int, dnodecomm float64) 
 
 // CreateSuperGraph creates a new graph where nodes are communities
 func (s *LouvainState) CreateSuperGraph() (*HomogeneousGraph, map[string][]string, error) {
-	// Renumber communities to be consecutive
-	communityRenumber := make(map[int]int)
 	communityMap := make(map[string][]string)
-	finalComm := 0
+	
+	// Create super nodes using ORIGINAL community IDs (no renumbering!)
+	superGraph := NewHomogeneousGraph()
 	
 	for comm, nodes := range s.C2N {
 		if len(nodes) > 0 {
-			communityRenumber[comm] = finalComm
-			commID := fmt.Sprintf("c%d", finalComm)
+			commID := fmt.Sprintf("c%d", comm)  // Use original community ID
 			communityMap[commID] = nodes
-			finalComm++
+			superGraph.AddNode(commID, 1.0)
 		}
-	}
-	
-	// Create new graph
-	superGraph := NewHomogeneousGraph()
-	
-	// Add nodes (communities become nodes)
-	for commID := range communityMap {
-		superGraph.AddNode(commID, 1.0)
 	}
 	
 	// Add edges between communities
@@ -364,16 +357,14 @@ func (s *LouvainState) CreateSuperGraph() (*HomogeneousGraph, map[string][]strin
 	
 	for _, nodeID := range s.Graph.NodeList {
 		comm1 := s.N2C[nodeID]
-		newComm1 := communityRenumber[comm1]
 		
 		neighbors := s.Graph.GetNeighbors(nodeID)
 		for neighbor, weight := range neighbors {
 			comm2 := s.N2C[neighbor]
-			newComm2 := communityRenumber[comm2]
 			
-			if newComm1 <= newComm2 { // Avoid double counting
-				from := fmt.Sprintf("c%d", newComm1)
-				to := fmt.Sprintf("c%d", newComm2)
+			if comm1 <= comm2 { // Avoid double counting
+				from := fmt.Sprintf("c%d", comm1)
+				to := fmt.Sprintf("c%d", comm2)
 				key := EdgeKey{From: from, To: to}
 				communityEdges[key] += weight
 			}
