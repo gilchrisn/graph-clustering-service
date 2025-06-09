@@ -38,6 +38,9 @@ func NewMaterializationEngine(graph *models.HeterogeneousGraph, metaPath *models
 		progressCb: progressCb,
 	}
 	
+	if graph == nil || metaPath == nil {
+		return engine
+	}
 	// Initialize components
 	engine.instanceGen = NewInstanceGenerator(graph, metaPath, config.Traversal)
 	engine.homogBuilder = NewHomogeneousBuilder(metaPath, config.Aggregation)
@@ -53,6 +56,10 @@ func (me *MaterializationEngine) Materialize() (*MaterializationResult, error) {
 	// Validate inputs
 	if err := me.validateInputs(); err != nil {
 		return me.createErrorResult(err)
+	}
+
+	if me.instanceGen == nil {
+		return me.createErrorResult(MaterializationError{Component: "input", Message: "instance generator is not properly initialized"})
 	}
 	
 	// Estimate instance count for progress tracking
@@ -156,13 +163,14 @@ func (me *MaterializationEngine) buildHomogeneousGraph(instances []PathInstance)
 	for _, instance := range instances {
 		me.homogBuilder.AddInstance(instance)
 	}
-	
 	// Build the final homogeneous graph
 	homogGraph, aggStats := me.homogBuilder.Build()
 	
-	// Apply weight calculation and normalization
-	if err := me.weightCalc.ProcessGraph(homogGraph); err != nil {
-		return nil, aggStats, fmt.Errorf("failed to process weights: %w", err)
+	
+	if len(homogGraph.Edges) > 0 {
+		if err := me.weightCalc.ProcessGraph(homogGraph); err != nil {
+			return nil, aggStats, fmt.Errorf("failed to process weights: %w", err)
+		}
 	}
 	
 	// Calculate final statistics
@@ -187,9 +195,14 @@ func (me *MaterializationEngine) getMemoryUsage() int64 {
 
 // createErrorResult creates a MaterializationResult for errors
 func (me *MaterializationEngine) createErrorResult(err error) (*MaterializationResult, error) {
+	var runtimeMS int64 = 0
+	if !me.startTime.IsZero() {
+		runtimeMS = time.Since(me.startTime).Milliseconds()
+	}
+	
 	return &MaterializationResult{
 		Statistics: ProcessingStatistics{
-			RuntimeMS: time.Since(me.startTime).Milliseconds(),
+			RuntimeMS: runtimeMS,
 		},
 		Config:  me.config,
 		Success: false,

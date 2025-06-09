@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"github.com/graph-clustering-service/pkg/models"
 )
 
 // SaveHomogeneousGraph saves a homogeneous graph to file
@@ -95,23 +96,58 @@ func SaveAsCSV(graph *HomogeneousGraph, outputPath string) error {
 }
 
 // SaveAsJSON saves the complete graph with metadata as JSON
+// SaveAsJSON saves the complete graph with metadata as JSON
 func SaveAsJSON(graph *HomogeneousGraph, outputPath string) error {
 	file, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
 	defer file.Close()
-	
+
+	// Convert to JSON-friendly format
+	type JSONEdge struct {
+		From   string  `json:"from"`
+		To     string  `json:"to"`
+		Weight float64 `json:"weight"`
+	}
+
+	type JSONGraph struct {
+		NodeType   string                 `json:"node_type"`
+		Nodes      map[string]Node        `json:"nodes"`
+		Edges      []JSONEdge             `json:"edges"`      // Convert map to slice
+		Statistics GraphStatistics        `json:"statistics"`
+		MetaPath   models.MetaPath        `json:"meta_path"`
+	}
+
+	// Convert edges map to slice
+	var jsonEdges []JSONEdge
+	for edgeKey, weight := range graph.Edges {
+		jsonEdges = append(jsonEdges, JSONEdge{
+			From:   edgeKey.From,
+			To:     edgeKey.To,
+			Weight: weight,
+		})
+	}
+
+	jsonGraph := JSONGraph{
+		NodeType:   graph.NodeType,
+		Nodes:      graph.Nodes,
+		Edges:      jsonEdges,
+		Statistics: graph.Statistics,
+		MetaPath:   graph.MetaPath,
+	}
+
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
-	
-	if err := encoder.Encode(graph); err != nil {
+
+	if err := encoder.Encode(jsonGraph); err != nil {
 		return fmt.Errorf("failed to encode JSON: %w", err)
 	}
-	
+
 	return nil
 }
 
+// SaveMaterializationResult saves the complete materialization result
 // SaveMaterializationResult saves the complete materialization result
 func SaveMaterializationResult(result *MaterializationResult, outputPath string) error {
 	file, err := os.Create(outputPath)
@@ -119,13 +155,67 @@ func SaveMaterializationResult(result *MaterializationResult, outputPath string)
 		return fmt.Errorf("failed to create file: %w", err)
 	}
 	defer file.Close()
-	
+
+	// Convert edges to JSON-friendly format
+	type JSONEdge struct {
+		From   string  `json:"from"`
+		To     string  `json:"to"`
+		Weight float64 `json:"weight"`
+	}
+
+	type JSONResult struct {
+		HomogeneousGraph *struct {
+			NodeType   string                 `json:"node_type"`
+			Nodes      map[string]Node        `json:"nodes"`
+			Edges      []JSONEdge             `json:"edges"`
+			Statistics GraphStatistics        `json:"statistics"`
+			MetaPath   models.MetaPath        `json:"meta_path"`
+		} `json:"homogeneous_graph"`
+		Statistics ProcessingStatistics  `json:"statistics"`
+		Config     MaterializationConfig `json:"config"`
+		Success    bool                  `json:"success"`
+		Error      string                `json:"error,omitempty"`
+	}
+
+	jsonResult := &JSONResult{
+		Statistics: result.Statistics,
+		Config:     result.Config,
+		Success:    result.Success,
+		Error:      result.Error,
+	}
+
+	// Convert homogeneous graph if it exists
+	if result.HomogeneousGraph != nil {
+		var jsonEdges []JSONEdge
+		for edgeKey, weight := range result.HomogeneousGraph.Edges {
+			jsonEdges = append(jsonEdges, JSONEdge{
+				From:   edgeKey.From,
+				To:     edgeKey.To,
+				Weight: weight,
+			})
+		}
+
+		jsonResult.HomogeneousGraph = &struct {
+			NodeType   string                 `json:"node_type"`
+			Nodes      map[string]Node        `json:"nodes"`
+			Edges      []JSONEdge             `json:"edges"`
+			Statistics GraphStatistics        `json:"statistics"`
+			MetaPath   models.MetaPath        `json:"meta_path"`
+		}{
+			NodeType:   result.HomogeneousGraph.NodeType,
+			Nodes:      result.HomogeneousGraph.Nodes,
+			Edges:      jsonEdges,
+			Statistics: result.HomogeneousGraph.Statistics,
+			MetaPath:   result.HomogeneousGraph.MetaPath,
+		}
+	}
+
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
-	
-	if err := encoder.Encode(result); err != nil {
+
+	if err := encoder.Encode(jsonResult); err != nil {
 		return fmt.Errorf("failed to encode JSON: %w", err)
 	}
-	
+
 	return nil
 }

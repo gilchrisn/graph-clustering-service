@@ -25,7 +25,8 @@ func (wc *WeightCalculator) ProcessGraph(graph *HomogeneousGraph) error {
 	}
 	
 	if len(graph.Edges) == 0 {
-		return MaterializationError{Component: "weight_calculation", Message: "graph has no edges"}
+		fmt.Println("No edges to process, skipping weight calculation")
+		return nil // Nothing to do
 	}
 	
 	// Apply normalization if specified

@@ -137,8 +137,8 @@ func (hb *HomogeneousBuilder) processMeetingInstanceGroups(homogGraph *Homogeneo
 	
 	for _, instances := range hb.instanceGroups {
 		for _, instance := range instances {
-			if !instance.IsValid() || len(instance.Nodes) < 3 {
-				continue // Need at least 3 nodes for meeting-based (A -> B -> C)
+			if !instance.IsValid() || len(instance.Nodes) < 2 {
+				continue // Need at least 2 nodes for meeting-based (A -> B)
 			}
 			
 			// Find the meeting point - typically the middle node
