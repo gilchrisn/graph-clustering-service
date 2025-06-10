@@ -45,8 +45,8 @@ type LouvainState struct {
 	Config           LouvainConfig
 	N2C              map[string]int     // node -> community mapping
 	C2N              map[int][]string   // community -> nodes mapping
-	In               map[int]float64    // internal weight of each community
-	Tot              map[int]float64    // total weight of each community
+	In               map[int]float64    // internal weight of each community.
+	Tot              map[int]float64    // total weight of each community. 
 	CommunityCounter int                // Counter for generating community IDs
 	Iteration        int
 }
@@ -139,9 +139,11 @@ func (g *HomogeneousGraph) AddNode(nodeID string, weight float64) {
 func (g *HomogeneousGraph) AddEdge(from, to string, weight float64) {
 	// Add nodes if they don't exist
 	if _, exists := g.Nodes[from]; !exists {
+		fmt.Printf("Adding missing node: %s\n", from)
 		g.AddNode(from, 1.0)
 	}
 	if _, exists := g.Nodes[to]; !exists {
+		fmt.Printf("Adding missing node: %s\n", to)
 		g.AddNode(to, 1.0)
 	}
 	
@@ -160,8 +162,10 @@ func (g *HomogeneousGraph) AddEdge(from, to string, weight float64) {
 		toNode := g.Nodes[to]
 		toNode.Degree += weight
 		g.Nodes[to] = toNode
-	}
-	
+	} else {
+		fromNode.Degree += weight // Self-loop case
+		g.Nodes[from] = fromNode
+	}	
 	// Update total weight
 	g.TotalWeight += weight
 }
@@ -263,16 +267,23 @@ func (s *LouvainState) GetModularity() float64 {
 		return 0
 	}
 	
+	
 	q := 0.0
 	m2 := 2 * s.Graph.TotalWeight  // Factor of 2 here, OR divide 'in' by 2
 	
 	for comm, tot := range s.Tot {
 		if tot > 0 {
 			in := s.In[comm]
+			if in < 0 {
+				fmt.Printf("WARNING: Negative internal weight for community %d: %f\n", comm, in)
+				fmt.Printf("Community mapping: %v\n", s.C2N[comm])
+				// print community mapping for all communities for debug and panic
+				panic(fmt.Sprintf("Negative internal weight for community %d: %f", comm, in))
+			}
 			q += in/m2 - (tot/m2)*(tot/m2)
 		}
 	}
-	
+
 	return q
 }
 

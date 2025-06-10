@@ -5,6 +5,7 @@ import (
 	// "math"
 	"math/rand"
 	"time"
+	"sync"
 )
 
 // RunScar executes the complete SCAR algorithm with all fixes
@@ -32,7 +33,7 @@ func RunScar(graph *HeterogeneousGraph, config ScarConfig) (*ScarResult, error) 
 		CommunityDegrees:  make(map[int]*DegreeEstimate), // Added degree tracking
 		NodeDegrees:       make(map[string]*DegreeEstimate),
 		CurrentLevel:      0,
-		NodeToOriginal:    make(map[string][]string),
+		NodeToOriginal:    make(map[string][]string),  // Added node to original mapping
 		MergePhase:        0, // Added three-phase merging
 	}
 
@@ -203,8 +204,9 @@ func RunScar(graph *HeterogeneousGraph, config ScarConfig) (*ScarResult, error) 
 
 // Iterative sketch construction following the original C++ algorithm
 func (s *ScarState) constructSketchesIteratively() error {
-	fmt.Println("Checkpoint 1: Starting sketch construction...")
 	pathLength := len(s.Config.MetaPath.EdgeTypes) + 1
+
+	s.Graph.PrecomputeAdjacency()
 	
 	// Clear existing sketches
 	s.Sketches = make(map[string]*VertexBottomKSketch)
@@ -215,7 +217,6 @@ func (s *ScarState) constructSketchesIteratively() error {
 		s.Sketches[nodeID] = NewVertexBottomKSketch(s.Config.K, s.Config.NK, 0)
 	}
 
-	fmt.Println("Checkpoint 2: Sketches initialized for all nodes.")
 	// Get source type nodes (first node type in meta-path)
 	sourceType := s.Config.MetaPath.NodeTypes[0]
 	sourceNodes := s.Graph.GetNodesByType(sourceType)
@@ -234,55 +235,31 @@ func (s *ScarState) constructSketchesIteratively() error {
 		}
 	}
 
-	fmt.Println("Checkpoint 3: Source nodes sketches and hash mappings created.")
 	// Path-length iterations for sketch propagation
-	for iter := 1; iter < pathLength; iter++ {
-		fmt.Printf("Checkpoint 4: Starting sketch propagation iteration %d/%d\n", iter, pathLength-1)
-		if s.Config.Verbose {
-			fmt.Printf("  Sketch construction iteration %d/%d\n", iter, pathLength-1)
-		}
+    for iter := 1; iter < pathLength; iter++ {
+        
+        if s.Config.Verbose {
+            fmt.Printf("  Sketch construction iteration %d/%d (parallel=%v, workers=%d)\n", 
+                iter, pathLength-1, s.Config.Parallel.Enabled, s.Config.Parallel.NumWorkers)
+        }
 
-		// Create new sketches for this iteration
-		newSketches := make(map[string]*VertexBottomKSketch)
-		for _, nodeID := range s.Graph.NodeList {
-			newSketches[nodeID] = NewVertexBottomKSketch(s.Config.K, s.Config.NK, iter)
-		}
+        // NEW: Use parallel or sequential processing based on config
+        var newSketches map[string]*VertexBottomKSketch
+        var err error
+        
+        if s.Config.Parallel.Enabled {
+            newSketches, err = s.propagateSketchesParallel(iter)
+        } else {
+            newSketches, err = s.propagateSketchesSequential(iter)
+        }
+        
+        if err != nil {
+            return fmt.Errorf("sketch propagation failed at iteration %d: %v", iter, err)
+        }
 
-		// Propagate sketches along meta-path
-		currentNodeType := s.Config.MetaPath.NodeTypes[iter-1]
-		nextNodeType := s.Config.MetaPath.NodeTypes[iter]
-		edgeType := s.Config.MetaPath.EdgeTypes[iter-1]
-
-		for _, nodeID := range s.Graph.NodeList {
-			// Progress check
-			fmt.Printf("  Processing node %s (%d/%d)\n", nodeID, iter, len(s.Graph.NodeList))
-			if s.Graph.NodeTypes[nodeID] != currentNodeType {
-				continue
-			}
-
-			currentSketch := s.Sketches[nodeID]
-			if currentSketch.IsEmpty() {
-				continue
-			}
-
-			// Find neighbors of correct type
-			neighbors := s.Graph.GetNeighbors(nodeID, edgeType)
-			
-			for _, neighbor := range neighbors {
-				if s.Graph.NodeTypes[neighbor] == nextNodeType {
-					// Merge sketches across all nK hash functions
-					for hashFunc := 0; hashFunc < s.Config.NK; hashFunc++ {
-						for _, value := range currentSketch.Sketches[hashFunc] {
-							newSketches[neighbor].AddValue(hashFunc, value)
-						}
-					}
-				}
-			}
-		}
-
-		// Update sketches
-		s.Sketches = newSketches
-	}
+        // Update sketches
+        s.Sketches = newSketches
+    }
 
 	// Calculate node degrees
 	s.NodeDegrees = make(map[string]*DegreeEstimate)
@@ -292,6 +269,152 @@ func (s *ScarState) constructSketchesIteratively() error {
 
 	return nil
 }
+
+// propagateSketchesParallel implements parallel sketch propagation like Ligra
+func (s *ScarState) propagateSketchesParallel(iter int) (map[string]*VertexBottomKSketch, error) {
+    currentNodeType := s.Config.MetaPath.NodeTypes[iter-1]
+    nextNodeType := s.Config.MetaPath.NodeTypes[iter]
+    edgeType := s.Config.MetaPath.EdgeTypes[iter-1]
+    
+    // Build frontier: nodes that have sketches to propagate
+    frontier := make([]string, 0)
+    for _, nodeID := range s.Graph.NodeList {
+        if s.Graph.NodeTypes[nodeID] == currentNodeType && !s.Sketches[nodeID].IsEmpty() {
+            frontier = append(frontier, nodeID)
+        }
+    }
+    
+    if len(frontier) == 0 {
+        // No nodes to process, return empty sketches
+        return s.createEmptySketches(iter), nil
+    }
+    
+    if s.Config.Verbose {
+        fmt.Printf("    Processing frontier of %d nodes with %d workers\n", 
+            len(frontier), s.Config.Parallel.NumWorkers)
+    }
+    
+    // Create new sketches for this iteration
+    newSketches := s.createEmptySketches(iter)
+    
+    // Channel for collecting sketch updates
+    updateChan := make(chan SketchUpdate, s.Config.Parallel.UpdateBuffer)
+    
+    // Process frontier in parallel batches
+    var wg sync.WaitGroup
+    batchSize := s.Config.Parallel.BatchSize
+    
+    // Launch worker goroutines
+    for i := 0; i < s.Config.Parallel.NumWorkers; i++ {
+        start := i * batchSize
+        end := start + batchSize
+        if end > len(frontier) {
+            end = len(frontier)
+        }
+        if start >= len(frontier) {
+            break // No more work for this worker
+        }
+        
+        wg.Add(1)
+        go func(batchStart, batchEnd int) {
+            defer wg.Done()
+            s.processFrontierBatch(frontier[batchStart:batchEnd], edgeType, nextNodeType, updateChan)
+        }(start, end)
+    }
+    
+    // Close update channel when all workers finish
+    go func() {
+        wg.Wait()
+        close(updateChan)
+    }()
+    
+    // Collect updates and apply them to new sketches
+    updateCount := 0
+    for update := range updateChan {
+        newSketches[update.TargetNode].AddValue(update.HashFunc, update.Value)
+        updateCount++
+    }
+    
+    if s.Config.Verbose {
+        fmt.Printf("    Applied %d sketch updates\n", updateCount)
+    }
+    
+    return newSketches, nil
+}
+
+// processFrontierBatch processes a batch of frontier nodes in parallel
+func (s *ScarState) processFrontierBatch(batch []string, edgeType, nextNodeType string, updateChan chan<- SketchUpdate) {
+    for _, nodeID := range batch {
+        currentSketch := s.Sketches[nodeID]
+        if currentSketch.IsEmpty() {
+            continue
+        }
+
+        // Get neighbors using fast precomputed lookup
+        neighbors := s.Graph.GetNeighborsFast(nodeID, edgeType)
+        
+        for _, neighbor := range neighbors {
+            if s.Graph.NodeTypes[neighbor] == nextNodeType {
+                // Send sketch values to update channel (thread-safe)
+                for hashFunc := 0; hashFunc < s.Config.NK; hashFunc++ {
+                    for _, value := range currentSketch.Sketches[hashFunc] {
+                        updateChan <- SketchUpdate{
+                            TargetNode: neighbor,
+                            HashFunc:   hashFunc,
+                            Value:      value,
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// propagateSketchesSequential implements the original sequential version
+func (s *ScarState) propagateSketchesSequential(iter int) (map[string]*VertexBottomKSketch, error) {
+    currentNodeType := s.Config.MetaPath.NodeTypes[iter-1]
+    nextNodeType := s.Config.MetaPath.NodeTypes[iter]
+    edgeType := s.Config.MetaPath.EdgeTypes[iter-1]
+    
+    // Create new sketches for this iteration
+    newSketches := s.createEmptySketches(iter)
+
+    // Sequential processing (original logic)
+    for _, nodeID := range s.Graph.NodeList {
+        if s.Graph.NodeTypes[nodeID] != currentNodeType {
+            continue
+        }
+
+        currentSketch := s.Sketches[nodeID]
+        if currentSketch.IsEmpty() {
+            continue
+        }
+
+        neighbors := s.Graph.GetNeighborsFast(nodeID, edgeType)
+        
+        for _, neighbor := range neighbors {
+            if s.Graph.NodeTypes[neighbor] == nextNodeType {
+                for hashFunc := 0; hashFunc < s.Config.NK; hashFunc++ {
+                    for _, value := range currentSketch.Sketches[hashFunc] {
+                        newSketches[neighbor].AddValue(hashFunc, value)
+                    }
+                }
+            }
+        }
+    }
+    
+    return newSketches, nil
+}
+
+// createEmptySketches creates new sketch map for an iteration
+func (s *ScarState) createEmptySketches(iter int) map[string]*VertexBottomKSketch {
+    newSketches := make(map[string]*VertexBottomKSketch)
+    for _, nodeID := range s.Graph.NodeList {
+        newSketches[nodeID] = NewVertexBottomKSketch(s.Config.K, s.Config.NK, iter)
+    }
+    return newSketches
+}
+
 
 // Three-phase iteration execution
 func (s *ScarState) executeOneIteration() (bool, error) {
@@ -350,6 +473,7 @@ func (s *ScarState) initialBestMerge(nodeID string) (int, float64) {
 
 		// Use simple modularity gain for initial phase
 		gain := s.estimateModularityGain(nodeID, targetCommunity)
+
 		if gain > bestGain {
 			bestGain = gain
 			bestCommunity = targetCommunity
@@ -501,8 +625,8 @@ func (s *ScarState) findCommunitiesThroughSketches(nodeID string) []int {
 func (s *ScarState) initializeCommunities() {
 	s.N2C = make(map[string]int)
 	s.C2N = make(map[int][]string)
-	s.CommunitySketches = make(map[int]*VertexBottomKSketch)
-	s.CommunityDegrees = make(map[int]*DegreeEstimate)
+	s.CommunitySketches = make(map[int]*VertexBottomKSketch) // Added community sketches
+	s.CommunityDegrees = make(map[int]*DegreeEstimate) // Added community degree estimates
 	s.CommunityCounter = 0
 
 	for _, nodeID := range s.Graph.NodeList {
@@ -515,13 +639,16 @@ func (s *ScarState) initializeCommunities() {
 		if nodeSketch != nil {
 			s.CommunitySketches[communityID] = nodeSketch.Clone()
 			s.CommunityDegrees[communityID] = nodeSketch.EstimateDegree()
+		} else {
+			fmt.Printf("Warning: No sketch found for node %s\n", nodeID)
 		}
-		
+
 		s.CommunityCounter++
 	}
 }
 
 // Enhanced modularity calculation using sophisticated degree estimation
+
 func (s *ScarState) calculateModularity() float64 {
 	if len(s.Graph.Edges) == 0 {
 		return 0
@@ -530,49 +657,126 @@ func (s *ScarState) calculateModularity() float64 {
 	totalEdges := float64(len(s.Graph.Edges))
 	modularity := 0.0
 	
+	// Calculate in[] and tot[] arrays 
+	in := make(map[int]float64)   // internal edges per community
+	tot := make(map[int]float64)  // total degree per community
+	
+	// Initialize
+	for communityID := range s.C2N {
+		in[communityID] = 0
+		tot[communityID] = 0
+	}
+	
+	// Calculate total degrees (tot[])
 	for communityID, nodes := range s.C2N {
-		if len(nodes) == 0 {
-			continue
+		for _, nodeID := range nodes {
+			if degree := s.NodeDegrees[nodeID]; degree != nil {
+				tot[communityID] += degree.Value
+			}
 		}
-		
-		communitySketch := s.CommunitySketches[communityID]
-		if communitySketch == nil {
-			continue
+	}
+	
+	// Calculate internal edges (in[]) using sketch-based estimation
+	for communityID, nodes := range s.C2N {
+		internalEdges := s.estimateInternalEdges(communityID, nodes)
+		in[communityID] = internalEdges
+	}
+	
+	// Apply modularity formula: Q = Σ[(in[i] - tot[i]²/(2m))] / (2m)
+	for communityID := range s.C2N {
+		if tot[communityID] > 0 {
+			expectedEdges := (tot[communityID] * tot[communityID]) / (2.0 * totalEdges)
+			deltaQ := in[communityID] - expectedEdges
+			modularity += deltaQ
 		}
-		
-		// Use sophisticated degree estimation
-		communityDegree := s.CommunityDegrees[communityID]
-		if communityDegree == nil {
-			continue
-		}
-		
-		// Estimate internal edges using sketch intersections
-		internalEdges := 0.0
-		for i, node1 := range nodes {
+	}
+	
+	modularity /= (2.0 * totalEdges)
+	return modularity
+}
+
+// Estimate internal edges within a community using sketches
+func (s *ScarState) estimateInternalEdges(communityID int, nodes []string) float64 {
+	if len(nodes) <= 1 {
+		return 0
+	}
+	
+	totalInternalEdges := 0.0
+	
+	// Method 1: For small communities, check all pairs
+	if len(nodes) <= 10 {
+		for i := 0; i < len(nodes); i++ {
 			for j := i + 1; j < len(nodes); j++ {
+				node1 := nodes[i]
 				node2 := nodes[j]
+				
 				sketch1 := s.Sketches[node1]
 				sketch2 := s.Sketches[node2]
+				
 				if sketch1 != nil && sketch2 != nil {
+					// Estimate edges between these two nodes
 					intersection := sketch1.EstimateIntersectionWith(sketch2)
-					internalEdges += intersection / float64(s.Config.NK) // Normalize by number of hash functions
+					// Normalize by nK to avoid double counting
+					totalInternalEdges += intersection / float64(s.Config.NK)
 				}
 			}
 		}
-		
-		// Expected edges calculation
-		expectedEdges := (communityDegree.Value * communityDegree.Value) / (4.0 * totalEdges)
-		
-		// Modularity contribution
-		modularity += (internalEdges - expectedEdges) / totalEdges
+	} else {
+		// Method 2: For large communities, use community sketch
+		communitySketch := s.CommunitySketches[communityID]
+		if communitySketch != nil {
+			// Estimate using community sketch self-intersection
+			// This approximates the internal connectivity
+			totalInternalEdges = s.estimateCommunityInternalEdges(communitySketch, len(nodes))
+		}
 	}
 	
-	return modularity
+	return totalInternalEdges
+}
+
+// Estimate internal edges for large communities using community sketch
+func (s *ScarState) estimateCommunityInternalEdges(communitySketch *VertexBottomKSketch, numNodes int) float64 {
+	if communitySketch == nil || numNodes <= 1 {
+		return 0
+	}
+	
+	// Use the community's total degree and apply a density estimation
+	communityDegree := s.CommunityDegrees[s.findCommunityID(communitySketch)]
+	if communityDegree == nil {
+		return 0
+	}
+	
+	// Estimate internal density based on sketch saturation
+	// More sophisticated communities have higher internal connectivity
+	densityFactor := 0.5 // Default 50% internal
+	if communityDegree.IsSaturated {
+		densityFactor = 0.7 // Higher internal connectivity for saturated sketches
+	}
+	
+	// Estimate internal edges as fraction of total degree
+	totalDegree := communityDegree.Value
+	estimatedInternalEdges := totalDegree * densityFactor
+	
+	return estimatedInternalEdges
+}
+
+// Helper to find community ID from sketch (needed for the above function)
+func (s *ScarState) findCommunityID(targetSketch *VertexBottomKSketch) int {
+	for communityID, sketch := range s.CommunitySketches {
+		if sketch == targetSketch {
+			return communityID
+		}
+	}
+	return -1 // Not found
 }
 
 // Enhanced move node with proper sketch and degree updates
 func (s *ScarState) moveNodeToCommunity(nodeID string, newCommunity int) {
 	oldCommunity := s.N2C[nodeID]
+	
+	if oldCommunity == newCommunity {
+		return // No change needed
+	}
 	
 	// Remove from old community
 	oldNodes := s.C2N[oldCommunity]
@@ -624,6 +828,7 @@ func (s *ScarState) estimateModularityGain(nodeID string, targetCommunity int) f
 	communitySketch := s.CommunitySketches[targetCommunity]
 	
 	if nodeSketch == nil || communitySketch == nil {
+		fmt.Printf("Warning: Sketches missing for node %s or community %d\n", nodeID, targetCommunity)
 		return 0.0
 	}
 	

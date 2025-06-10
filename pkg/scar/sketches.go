@@ -51,6 +51,20 @@ func (s *VertexBottomKSketch) AddValue(hashFunc int, value uint64) {
 	}
 }
 
+// EstimateUnionWith calculates union size for inclusion-exclusion
+func (s *VertexBottomKSketch) EstimateUnionWith(other *VertexBottomKSketch) float64 {
+	if other == nil || s.NK != other.NK {
+		return 0
+	}
+	
+	unionSketch := UnionSketches(s, other)
+	if unionSketch == nil {
+		return 0
+	}
+	
+	return unionSketch.EstimateDegree().Value
+}
+
 // Sophisticated degree estimation with saturated/undersaturated handling
 func (s *VertexBottomKSketch) EstimateDegree() *DegreeEstimate {
 	if s.NK == 0 {
@@ -92,57 +106,95 @@ func (s *VertexBottomKSketch) EstimateDegree() *DegreeEstimate {
 	}
 }
 
-// Complex intersection calculation with two methods
+// Complex intersection calculation with two methods// Complex intersection calculation using inclusion-exclusion principle
 func (s *VertexBottomKSketch) EstimateIntersectionWith(other *VertexBottomKSketch) float64 {
 	if other == nil || s.NK != other.NK {
 		return 0
 	}
 	
-	totalIntersection := 0.0
+	// Get individual estimates
+	size1 := s.EstimateDegree().Value
+	size2 := other.EstimateDegree().Value
+	
+	// For very small sketches, use direct overlap counting
+	if s.Size() < s.K/2 && other.Size() < other.K/2 {
+		return s.countDirectOverlap(other)
+	}
+	
+	// Use inclusion-exclusion: |A ∩ B| = |A| + |B| - |A ∪ B|
+	unionSize := s.EstimateUnionWith(other)
+	intersection := size1 + size2 - unionSize
+	
+	// Ensure non-negative result
+	if intersection < 0 {
+		intersection = 0
+	}
+	
+	return intersection
+}
+
+// Helper function for direct overlap counting
+func (s *VertexBottomKSketch) countDirectOverlap(other *VertexBottomKSketch) float64 {
+	totalOverlap := 0.0
 	
 	for i := 0; i < s.NK; i++ {
 		sketch1 := s.Sketches[i]
 		sketch2 := other.Sketches[i]
 		
-		// Check if sketches are undersaturated
-		if len(sketch1) < s.NK*s.K && len(sketch2) < other.NK*other.K {
-			// Method 1: Count exact overlaps for undersaturated sketches
-			c1Size := float64(len(sketch1))
-			c2Size := float64(len(sketch2))
-			
-			// Count overlapping hash values
-			overlapCount := 0
-			sketch1Map := make(map[uint64]bool)
-			for _, val := range sketch1 {
-				sketch1Map[val] = true
+		overlapCount := 0
+		sketch1Map := make(map[uint64]bool)
+		for _, val := range sketch1 {
+			sketch1Map[val] = true
+		}
+		
+		for _, val := range sketch2 {
+			if sketch1Map[val] {
+				overlapCount++
 			}
-			
-			for _, val := range sketch2 {
-				if sketch1Map[val] {
-					overlapCount++
-				}
-			}
-			
-			intersectK := c1Size + c2Size - float64(overlapCount)/float64(s.NK)
-			totalIntersection += intersectK
-		} else {
-			// Method 2: Statistical estimation for saturated sketches
-			if len(sketch1) > 0 && len(sketch2) > 0 {
-				// Use the maximum of the K-th values
-				maxKthValue := sketch1[len(sketch1)-1]
-				if len(sketch2) > 0 && sketch2[len(sketch2)-1] > maxKthValue {
-					maxKthValue = sketch2[len(sketch2)-1]
-				}
-				
-				if maxKthValue > 0 {
-					intersectK := float64(s.K-1) * float64(s.NK) * float64(UINT64_MAX) / float64(maxKthValue)
-					totalIntersection += intersectK
-				}
-			}
+		}
+		
+		totalOverlap += float64(overlapCount)
+	}
+	
+	return totalOverlap / float64(s.NK)
+}
+
+// Helper function to create union of two hash function sketches
+func (s *VertexBottomKSketch) createUnionForHashFunc(sketch1, sketch2 []uint64) []uint64 {
+	// Merge all values
+	allValues := make([]uint64, 0, len(sketch1)+len(sketch2))
+	allValues = append(allValues, sketch1...)
+	allValues = append(allValues, sketch2...)
+	
+	// Remove duplicates and sort
+	uniqueValues := removeDuplicatesUint64(allValues)
+	
+	// Keep only K smallest values
+	if len(uniqueValues) > s.K {
+		uniqueValues = uniqueValues[:s.K]
+	}
+	
+	return uniqueValues
+}
+
+// Helper function to estimate degree for single hash function
+func (s *VertexBottomKSketch) estimateDegreeForHashFunc(sketch []uint64) float64 {
+	if len(sketch) == 0 {
+		return 0
+	}
+	
+	if len(sketch) < s.K {
+		// Undersaturated
+		return float64(len(sketch))
+	} else {
+		// Saturated
+		maxValue := sketch[len(sketch)-1]
+		if maxValue > 0 {
+			return float64(UINT64_MAX) / float64(maxValue) * float64(s.K-1)
 		}
 	}
 	
-	return totalIntersection / float64(s.NK)
+	return 0
 }
 
 // Get all hash values for adjacency discovery
@@ -450,3 +502,4 @@ func HasSketchOverlap(s1, s2 *VertexBottomKSketch, threshold float64) bool {
 	overlapRatio := float64(overlapCount) / float64(totalChecked)
 	return overlapRatio >= threshold
 }
+

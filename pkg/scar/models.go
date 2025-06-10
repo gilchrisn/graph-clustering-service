@@ -4,6 +4,8 @@ import (
 	"fmt"
 	// "math"
 	"time"
+	"runtime"
+	// "sync"
 )
 
 // EdgeKey represents a unique edge identifier
@@ -19,6 +21,12 @@ type HeterogeneousGraph struct {
 	NodeTypes map[string]string // nodeID -> node type
 	EdgeTypes map[EdgeKey]string // edge -> edge type
 	NodeList  []string          // for consistent iteration
+
+	// Adjacency lists for fast neighbor access
+	OutEdges map[string]map[string][]string // outgoing edges
+	InEdges  map[string]map[string][]string // incoming edges
+	IsPrecomputed bool // track if adjacency lists are built
+
 }
 
 // HeteroNode represents a node in heterogeneous graph
@@ -95,6 +103,9 @@ type ScarConfig struct {
 	RandomSeed       int64            // for reproducibility
 	Verbose          bool             // enable verbose output
 	ProgressCallback ProgressCallback // optional progress callback
+
+	// Enhanced configuration
+    Parallel         ParallelConfig   // parallel processing settings
 }
 
 // DefaultScarConfig returns default configuration
@@ -106,6 +117,8 @@ func DefaultScarConfig() ScarConfig {
 		MinModularity: 1e-6,
 		RandomSeed:    42,
 		Verbose:       false,
+
+		Parallel:      DefaultParallelConfig(), // Use default parallel config
 	}
 }
 
@@ -190,6 +203,62 @@ type EFunctionResult struct {
 	ActualEdges     float64
 }
 
+// PrecomputeAdjacency builds adjacency lists for O(1) neighbor lookup
+func (g *HeterogeneousGraph) PrecomputeAdjacency() {
+	// Don't recompute if already done
+	if g.IsPrecomputed {
+		return
+	}
+	
+	g.OutEdges = make(map[string]map[string][]string)
+	g.InEdges = make(map[string]map[string][]string)
+	
+	// Initialize maps for all nodes
+	for nodeID := range g.Nodes {
+		g.OutEdges[nodeID] = make(map[string][]string)
+		g.InEdges[nodeID] = make(map[string][]string)
+	}
+	
+	// Build adjacency lists by scanning edges ONCE
+	for edge, edgeType := range g.EdgeTypes {
+		// Outgoing edge: from -> to
+		if g.OutEdges[edge.From][edgeType] == nil {
+			g.OutEdges[edge.From][edgeType] = make([]string, 0)
+		}
+		g.OutEdges[edge.From][edgeType] = append(g.OutEdges[edge.From][edgeType], edge.To)
+		
+		// Incoming edge: to <- from  
+		if g.InEdges[edge.To][edgeType] == nil {
+			g.InEdges[edge.To][edgeType] = make([]string, 0)
+		}
+		g.InEdges[edge.To][edgeType] = append(g.InEdges[edge.To][edgeType], edge.From)
+	}
+	
+	g.IsPrecomputed = true
+}
+
+
+// GetNeighborsFast replaces the slow GetNeighbors method
+func (g *HeterogeneousGraph) GetNeighborsFast(nodeID string, edgeType string) []string {
+	// Ensure adjacency lists are built
+	if !g.IsPrecomputed {
+		g.PrecomputeAdjacency()
+	}
+	
+	var neighbors []string
+	
+	// O(1) lookup instead of O(E) scan
+	if outNeighbors, exists := g.OutEdges[nodeID][edgeType]; exists {
+		neighbors = append(neighbors, outNeighbors...)
+	}
+	
+	if inNeighbors, exists := g.InEdges[nodeID][edgeType]; exists {
+		neighbors = append(neighbors, inNeighbors...)
+	}
+	
+	return neighbors
+}
+
 // GetNodesByType returns all nodes of a specific type
 func (g *HeterogeneousGraph) GetNodesByType(nodeType string) []string {
 	var nodes []string
@@ -256,6 +325,10 @@ func NewHeterogeneousGraph() *HeterogeneousGraph {
 		NodeTypes: make(map[string]string),
 		EdgeTypes: make(map[EdgeKey]string),
 		NodeList:  make([]string, 0),
+		OutEdges:  make(map[string]map[string][]string),
+		InEdges:   make(map[string]map[string][]string),
+		IsPrecomputed: false,
+
 	}
 }
 
@@ -271,6 +344,8 @@ func (g *HeterogeneousGraph) AddEdge(edge HeteroEdge) {
 	key := EdgeKey{From: edge.From, To: edge.To}
 	g.Edges[key] = edge
 	g.EdgeTypes[key] = edge.Type
+
+	g.IsPrecomputed = false // reset precomputation flag
 }
 
 // NumNodes returns the number of nodes
@@ -305,4 +380,31 @@ func (h *HashToNodeMap) GetNode(hashValue uint64) (string, bool) {
 func (h *HashToNodeMap) HasHash(hashValue uint64) bool {
 	_, exists := h.Mapping[hashValue]
 	return exists
+}
+
+// ====== Additional Structures for Sketch Updates Optimization ======
+
+// SketchUpdate represents a sketch value to be added to a target node
+type SketchUpdate struct {
+    TargetNode string
+    HashFunc   int
+    Value      uint64
+}
+
+// ParallelConfig controls parallel processing
+type ParallelConfig struct {
+    NumWorkers    int  // Number of worker goroutines
+    BatchSize     int  // Nodes per batch
+    UpdateBuffer  int  // Channel buffer size
+    Enabled       bool // Enable/disable parallelization
+}
+
+// DefaultParallelConfig returns sensible parallel defaults
+func DefaultParallelConfig() ParallelConfig {
+    return ParallelConfig{
+        NumWorkers:   runtime.NumCPU(),
+        BatchSize:    1000,  // Process 1000 nodes per batch
+        UpdateBuffer: 10000, // Buffer 10K updates
+        Enabled:      true,
+    }
 }

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"github.com/graph-clustering-service/pkg/models"
+	"github.com/gilchrisn/graph-clustering-service/pkg/models"
 )
 
 // SaveHomogeneousGraph saves a homogeneous graph to file

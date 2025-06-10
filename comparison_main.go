@@ -107,7 +107,7 @@ func runMaterializationApproach(graph *models.HeterogeneousGraph, metaPath *mode
 	// Configure materialization
 	config := materialization.DefaultMaterializationConfig()
 	config.Aggregation.Strategy = materialization.Count
-	config.Aggregation.Interpretation = materialization.DirectTraversal
+	config.Aggregation.Interpretation = materialization.MeetingBased
 	config.Aggregation.Symmetric = true
 	config.Aggregation.MinWeight = 1.0
 
@@ -205,8 +205,12 @@ func runScarApproach(graph *models.HeterogeneousGraph, metaPath *models.MetaPath
 	config.K = 64
 	config.NK = 8
 	config.RandomSeed = 42
-	config.Verbose = false
+	config.Verbose = true
 	config.MaxIterations = 50
+
+	config.Parallel.Enabled = true // Enable parallel processing
+	config.Parallel.NumWorkers = 4 // Set number of workers for parallel processing
+	config.Parallel.BatchSize = 100 // Set max queue size for parallel tasks
 
 	// Progress callback
 	config.ProgressCallback = func(level int, iteration int, modularity float64, nodes int) {
