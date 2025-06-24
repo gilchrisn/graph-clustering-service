@@ -69,6 +69,16 @@ func (me *MaterializationEngine) Materialize() (*MaterializationResult, error) {
 	}
 	
 	me.reportProgress(0, estimatedInstances, "Starting materialization...")
+
+	// After validateInputs() succeeds, add:
+	startNodeType := me.metaPath.NodeSequence[0]
+	originalStartCount := 0
+	for _, node := range me.graph.Nodes {
+		if node.Type == startNodeType {
+			originalStartCount++
+		}
+	}
+	fmt.Printf("🔍 VERIFICATION: Starting with %d nodes of type '%s'\n", originalStartCount, startNodeType)
 	
 	// Generate all path instances using BFS
 	instances, traversalStats, err := me.generateInstances(estimatedInstances)
@@ -78,6 +88,18 @@ func (me *MaterializationEngine) Materialize() (*MaterializationResult, error) {
 
 	me.reportProgress(len(instances), estimatedInstances, "Instances generated, building homogeneous graph...")
 	
+	// After instances are generated, add:
+	uniqueStartNodes := make(map[string]bool)
+	uniqueEndNodes := make(map[string]bool)
+	for _, instance := range instances {
+		if instance.IsValid() {
+			uniqueStartNodes[instance.GetStartNode()] = true
+			uniqueEndNodes[instance.GetEndNode()] = true
+		}
+	}
+	fmt.Printf("🔍 VERIFICATION: Instances cover %d unique start nodes, %d unique end nodes\n", 
+		len(uniqueStartNodes), len(uniqueEndNodes))
+
 	// Build homogeneous graph from instances
 	homogeneousGraph, aggStats, err := me.buildHomogeneousGraph(instances)
 	if err != nil {
@@ -102,6 +124,12 @@ func (me *MaterializationEngine) Materialize() (*MaterializationResult, error) {
 		Config:  me.config,
 		Success: true,
 	}
+
+	// Print number of nodes and edges in the homogeneous graph
+	fmt.Printf("✅ Materialization complete! Generated %d edges from %d instances\n",
+		len(homogeneousGraph.Edges), len(instances))
+		fmt.Printf("Homogeneous graph has %d nodes and %d edges\n",
+		len(homogeneousGraph.Nodes), len(homogeneousGraph.Edges))
 	
 	return result, nil
 }
@@ -166,6 +194,8 @@ func (me *MaterializationEngine) buildHomogeneousGraph(instances []PathInstance)
 	// Build the final homogeneous graph
 	homogGraph, aggStats := me.homogBuilder.Build()
 	
+	// Print number of nodes and edges in the homogeneous graph
+	fmt.Printf("Homogeneous graph has %d nodes and %d edges\n", len(homogGraph.Nodes), len(homogGraph.Edges))
 	
 	if len(homogGraph.Edges) > 0 {
 		if err := me.weightCalc.ProcessGraph(homogGraph); err != nil {
@@ -173,6 +203,8 @@ func (me *MaterializationEngine) buildHomogeneousGraph(instances []PathInstance)
 		}
 	}
 	
+	fmt.Printf("Homogeneous graph has %d nodes and %d edges after weight calculation\n",
+		len(homogGraph.Nodes), len(homogGraph.Edges))
 	// Calculate final statistics
 	homogGraph.CalculateStatistics()
 	

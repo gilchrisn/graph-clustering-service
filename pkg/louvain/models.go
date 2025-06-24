@@ -5,7 +5,17 @@ import (
 	"math"
 )
 
-// HomogeneousGraph represents a weighted undirected graph
+// NormalizedGraph represents a weighted undirected graph with integer node indices
+type NormalizedGraph struct {
+	NumNodes     int         `json:"num_nodes"`
+	Degrees      []float64   `json:"degrees"`      // Node degrees
+	Weights      []float64   `json:"weights"`      // Node weights
+	Adjacency    [][]int     `json:"-"`           // Adjacency list (neighbor indices)
+	EdgeWeights  [][]float64 `json:"-"`           // Edge weights corresponding to adjacency
+	TotalWeight  float64     `json:"total_weight"`
+}
+
+// HomogeneousGraph represents a weighted undirected graph (legacy interface)
 type HomogeneousGraph struct {
 	Nodes       map[string]Node        `json:"nodes"`
 	Edges       map[EdgeKey]float64    `json:"edges"`
@@ -41,12 +51,12 @@ type LouvainConfig struct {
 
 // LouvainState maintains the current state of community assignments
 type LouvainState struct {
-	Graph            *HomogeneousGraph
+	Graph            *NormalizedGraph
 	Config           LouvainConfig
-	N2C              map[string]int     // node -> community mapping
-	C2N              map[int][]string   // community -> nodes mapping
-	In               map[int]float64    // internal weight of each community.
-	Tot              map[int]float64    // total weight of each community. 
+	N2C              []int              // node -> community mapping (array)
+	C2N              map[int][]int      // community -> nodes mapping
+	In               map[int]float64    // internal weight of each community
+	Tot              map[int]float64    // total weight of each community
 	CommunityCounter int                // Counter for generating community IDs
 	Iteration        int
 }
@@ -54,22 +64,22 @@ type LouvainState struct {
 // LouvainResult contains the complete result of Louvain clustering
 type LouvainResult struct {
 	Levels         []LevelInfo          `json:"levels"`
-	FinalCommunities map[string]int     `json:"final_communities"`
+	FinalCommunities map[int]int        `json:"final_communities"` // normalized node -> community
 	Modularity     float64              `json:"modularity"`
 	NumLevels      int                  `json:"num_levels"`
 	Statistics     LouvainStats         `json:"statistics"`
+	Parser         *GraphParser         `json:"-"` // For converting back to original IDs
 }
 
 // LevelInfo contains information about one level in the hierarchy
 type LevelInfo struct {
 	Level          int                  `json:"level"`
-	Communities    map[int][]string     `json:"communities"`     // community ID -> nodes
-	CommunityMap   map[string]int       `json:"community_map"`   // node -> community
-	Graph          *HomogeneousGraph    `json:"graph,omitempty"`
+	Communities    map[int][]int        `json:"communities"`     // community ID -> normalized nodes
+	CommunityMap   map[int]int          `json:"community_map"`   // normalized node -> community
+	Graph          *NormalizedGraph     `json:"graph,omitempty"`
 	Modularity     float64              `json:"modularity"`
 	NumCommunities int                  `json:"num_communities"`
 	NumMoves       int                  `json:"num_moves"`
-	
 }
 
 // LouvainStats contains statistics about the algorithm execution
@@ -113,6 +123,177 @@ func DefaultLouvainConfig() LouvainConfig {
 	}
 }
 
+// NewNormalizedGraph creates a new normalized graph with the given number of nodes
+func NewNormalizedGraph(numNodes int) *NormalizedGraph {
+	return &NormalizedGraph{
+		NumNodes:    numNodes,
+		Degrees:     make([]float64, numNodes),
+		Weights:     make([]float64, numNodes),
+		Adjacency:   make([][]int, numNodes),
+		EdgeWeights: make([][]float64, numNodes),
+		TotalWeight: 0,
+	}
+}
+
+// AddEdge adds an undirected weighted edge to the normalized graph
+func (g *NormalizedGraph) AddEdge(from, to int, weight float64) {
+	if from < 0 || from >= g.NumNodes || to < 0 || to >= g.NumNodes {
+		fmt.Printf("ERROR: Invalid node indices: %d, %d (numNodes: %d)\n", from, to, g.NumNodes)
+		return
+	}
+	
+	// Add to adjacency list
+	g.Adjacency[from] = append(g.Adjacency[from], to)
+	g.EdgeWeights[from] = append(g.EdgeWeights[from], weight)
+	
+	if from != to {
+		g.Adjacency[to] = append(g.Adjacency[to], from)
+		g.EdgeWeights[to] = append(g.EdgeWeights[to], weight)
+	}
+	
+	// Update degrees
+	g.Degrees[from] += weight
+	if from != to {
+		g.Degrees[to] += weight
+	} else {
+		g.Degrees[from] += weight // Self-loop case
+	}
+	
+	// Update total weight
+	g.TotalWeight += weight
+	
+	// Initialize node weights if not set
+	if g.Weights[from] == 0 {
+		g.Weights[from] = 1.0
+	}
+	if g.Weights[to] == 0 {
+		g.Weights[to] = 1.0
+	}
+}
+
+// GetNeighbors returns all neighbors of a node with their edge weights
+func (g *NormalizedGraph) GetNeighbors(nodeID int) map[int]float64 {
+	neighbors := make(map[int]float64)
+	
+	if nodeID < 0 || nodeID >= g.NumNodes {
+		return neighbors
+	}
+	
+	for i, neighbor := range g.Adjacency[nodeID] {
+		neighbors[neighbor] = g.EdgeWeights[nodeID][i]
+	}
+	
+	return neighbors
+}
+
+// GetNodeDegree returns the weighted degree of a node
+func (g *NormalizedGraph) GetNodeDegree(nodeID int) float64 {
+	if nodeID < 0 || nodeID >= g.NumNodes {
+		return 0
+	}
+	return g.Degrees[nodeID]
+}
+
+// GetEdgeWeight returns the weight of an edge
+func (g *NormalizedGraph) GetEdgeWeight(from, to int) float64 {
+	if from < 0 || from >= g.NumNodes || to < 0 || to >= g.NumNodes {
+		return 0
+	}
+	
+	for i, neighbor := range g.Adjacency[from] {
+		if neighbor == to {
+			return g.EdgeWeights[from][i]
+		}
+	}
+	return 0
+}
+
+// Clone creates a deep copy of the normalized graph
+func (g *NormalizedGraph) Clone() *NormalizedGraph {
+	clone := NewNormalizedGraph(g.NumNodes)
+	clone.TotalWeight = g.TotalWeight
+	
+	// Copy arrays
+	copy(clone.Degrees, g.Degrees)
+	copy(clone.Weights, g.Weights)
+	
+	// Copy adjacency lists
+	for i := 0; i < g.NumNodes; i++ {
+		clone.Adjacency[i] = make([]int, len(g.Adjacency[i]))
+		clone.EdgeWeights[i] = make([]float64, len(g.EdgeWeights[i]))
+		copy(clone.Adjacency[i], g.Adjacency[i])
+		copy(clone.EdgeWeights[i], g.EdgeWeights[i])
+	}
+	
+	return clone
+}
+
+// Validate checks if the normalized graph is valid
+func (g *NormalizedGraph) Validate() error {
+	if g.NumNodes <= 0 {
+		return fmt.Errorf("graph has no nodes")
+	}
+	
+	// Check adjacency list consistency
+	for i := 0; i < g.NumNodes; i++ {
+		if len(g.Adjacency[i]) != len(g.EdgeWeights[i]) {
+			return fmt.Errorf("adjacency and edge weights length mismatch for node %d", i)
+		}
+		
+		for j, neighbor := range g.Adjacency[i] {
+			if neighbor < 0 || neighbor >= g.NumNodes {
+				return fmt.Errorf("invalid neighbor %d for node %d", neighbor, i)
+			}
+			
+			weight := g.EdgeWeights[i][j]
+			if weight < 0 {
+				return fmt.Errorf("negative edge weight %f between nodes %d and %d", weight, i, neighbor)
+			}
+			
+			// Check symmetry for undirected graph (except self-loops)
+			if i != neighbor {
+				found := false
+				for k, reverseNeighbor := range g.Adjacency[neighbor] {
+					if reverseNeighbor == i && math.Abs(g.EdgeWeights[neighbor][k]-weight) < 1e-9 {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("graph is not symmetric: edge %d->%d", i, neighbor)
+				}
+			}
+		}
+	}
+	
+	return nil
+}
+
+// GetModularity calculates the modularity of the current partition
+func (s *LouvainState) GetModularity() float64 {
+	if s.Graph.TotalWeight == 0 {
+		return 0
+	}
+	
+	q := 0.0
+	m2 := 2 * s.Graph.TotalWeight
+	
+	for comm, tot := range s.Tot {
+		if tot > 0 {
+			in := s.In[comm]
+			if in < 0 {
+				fmt.Printf("WARNING: Negative internal weight for community %d: %f\n", comm, in)
+				panic(fmt.Sprintf("Negative internal weight for community %d: %f", comm, in))
+			}
+			q += in/m2 - (tot/m2)*(tot/m2)
+		}
+	}
+
+	return q
+}
+
+// Legacy HomogeneousGraph methods for backward compatibility
+
 // NewHomogeneousGraph creates a new empty homogeneous graph
 func NewHomogeneousGraph() *HomogeneousGraph {
 	return &HomogeneousGraph{
@@ -139,11 +320,9 @@ func (g *HomogeneousGraph) AddNode(nodeID string, weight float64) {
 func (g *HomogeneousGraph) AddEdge(from, to string, weight float64) {
 	// Add nodes if they don't exist
 	if _, exists := g.Nodes[from]; !exists {
-		fmt.Printf("Adding missing node: %s\n", from)
 		g.AddNode(from, 1.0)
 	}
 	if _, exists := g.Nodes[to]; !exists {
-		fmt.Printf("Adding missing node: %s\n", to)
 		g.AddNode(to, 1.0)
 	}
 	
@@ -163,10 +342,10 @@ func (g *HomogeneousGraph) AddEdge(from, to string, weight float64) {
 		toNode.Degree += weight
 		g.Nodes[to] = toNode
 	} else {
-		fromNode.Degree += weight // Self-loop case
+		fromNode.Degree += weight
 		g.Nodes[from] = fromNode
-	}	
-	// Update total weight
+	}
+	
 	g.TotalWeight += weight
 }
 
@@ -174,7 +353,6 @@ func (g *HomogeneousGraph) AddEdge(from, to string, weight float64) {
 func (g *HomogeneousGraph) GetNeighbors(nodeID string) map[string]float64 {
 	neighbors := make(map[string]float64)
 	
-	// Check outgoing edges
 	for edge, weight := range g.Edges {
 		if edge.From == nodeID {
 			neighbors[edge.To] = weight
@@ -205,7 +383,6 @@ func (g *HomogeneousGraph) Clone() *HomogeneousGraph {
 	clone := NewHomogeneousGraph()
 	clone.TotalWeight = g.TotalWeight
 	
-	// Copy nodes
 	for id, node := range g.Nodes {
 		cloneNode := Node{
 			ID:     node.ID,
@@ -219,11 +396,9 @@ func (g *HomogeneousGraph) Clone() *HomogeneousGraph {
 		clone.Nodes[id] = cloneNode
 	}
 	
-	// Copy node list
 	clone.NodeList = make([]string, len(g.NodeList))
 	copy(clone.NodeList, g.NodeList)
 	
-	// Copy edges
 	for edge, weight := range g.Edges {
 		clone.Edges[edge] = weight
 	}
@@ -233,12 +408,10 @@ func (g *HomogeneousGraph) Clone() *HomogeneousGraph {
 
 // Validate checks if the graph is valid
 func (g *HomogeneousGraph) Validate() error {
-	// Check if graph is empty
 	if len(g.Nodes) == 0 {
 		return fmt.Errorf("graph has no nodes")
 	}
 	
-	// Check edge references
 	for edge := range g.Edges {
 		if _, exists := g.Nodes[edge.From]; !exists {
 			return fmt.Errorf("edge references non-existent node: %s", edge.From)
@@ -248,7 +421,6 @@ func (g *HomogeneousGraph) Validate() error {
 		}
 	}
 	
-	// Check symmetry (undirected graph)
 	for edge, weight := range g.Edges {
 		reverseEdge := EdgeKey{From: edge.To, To: edge.From}
 		if edge.From != edge.To {
@@ -259,32 +431,6 @@ func (g *HomogeneousGraph) Validate() error {
 	}
 	
 	return nil
-}
-
-// GetModularity calculates the modularity of the current partition
-func (s *LouvainState) GetModularity() float64 {
-	if s.Graph.TotalWeight == 0 {
-		return 0
-	}
-	
-	
-	q := 0.0
-	m2 := 2 * s.Graph.TotalWeight  // Factor of 2 here, OR divide 'in' by 2
-	
-	for comm, tot := range s.Tot {
-		if tot > 0 {
-			in := s.In[comm]
-			if in < 0 {
-				fmt.Printf("WARNING: Negative internal weight for community %d: %f\n", comm, in)
-				fmt.Printf("Community mapping: %v\n", s.C2N[comm])
-				// print community mapping for all communities for debug and panic
-				panic(fmt.Sprintf("Negative internal weight for community %d: %f", comm, in))
-			}
-			q += in/m2 - (tot/m2)*(tot/m2)
-		}
-	}
-
-	return q
 }
 
 // String returns a string representation of an edge key

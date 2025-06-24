@@ -1498,3 +1498,133 @@ func BenchmarkWeightCalculator_ProcessGraph(b *testing.B) {
 		}
 	}
 }
+
+
+func TestVerifyMaterialization(t *testing.T) {
+	// Create a simple test graph (use your existing test data)
+	graph, metaPath := NewTestDataBuilder().
+		AddNode("a1", "Author", nil).
+		AddNode("a2", "Author", nil).
+		AddNode("p1", "Paper", nil).
+		AddEdge("a1", "p1", "writes", 1.0).
+		AddEdge("a2", "p1", "writes", 1.0).
+		AddEdge("p1", "a1", "writtenBy", 1.0).
+		AddEdge("p1", "a2", "writtenBy", 1.0).
+		SetMetaPath("test", 
+			[]string{"Author", "Paper", "Author"}, 
+			[]string{"writes", "writtenBy"}).
+		Build()
+
+	// Verify the materialization
+	verifier := NewGraphVerifier()
+	verifier.LoadFromObjects(graph, metaPath)
+	
+	config := DefaultMaterializationConfig()
+	result, err := verifier.VerifyMaterialization(config)
+
+	if err != nil {
+		t.Fatalf("Verification failed: %v", err)
+	}
+
+	// Print summary
+	PrintVerificationSummary(result)
+
+	// Check critical requirements
+	if !result.Passed {
+		t.Errorf("Verification failed - check output above")
+	}
+
+	// Check specific things you care about
+	nodeCountTest := findTest(result.TestResults, "symmetric_node_count")
+	if nodeCountTest != nil && !nodeCountTest.Passed {
+		t.Errorf("Node count test failed: %s", nodeCountTest.Actual)
+	}
+
+	traversabilityTest := findTest(result.TestResults, "meta_path_traversable")
+	if traversabilityTest != nil && !traversabilityTest.Passed {
+		t.Errorf("Meta path not traversable: %s", traversabilityTest.ErrorMsg)
+	}
+}
+
+
+func TestVerifyMaterializationWithRealData(t *testing.T) {
+	// Load YOUR actual graph and meta path files
+	// Replace these paths with your actual file paths
+	verifier := NewGraphVerifier()
+	
+	// For testing, use your actual files:
+	// err := verifier.LoadFromFiles("path/to/your/graph.json", "path/to/your/metapath.json")
+	// if err != nil {
+	//     t.Fatalf("Failed to load files: %v", err)
+	// }
+	
+	// For now, creating test data that matches your scenario
+	graph, metaPath := NewTestDataBuilder().
+		AddNode("a1", "Author", nil).
+		AddNode("a2", "Author", nil).
+		AddNode("p1", "Paper", nil).
+		AddEdge("a1", "p1", "writes", 1.0).
+		AddEdge("a2", "p1", "writes", 1.0).
+		AddEdge("p1", "a1", "writtenBy", 1.0).
+		AddEdge("p1", "a2", "writtenBy", 1.0).
+		SetMetaPath("test", 
+			[]string{"Author", "Paper", "Author"}, 
+			[]string{"writes", "writtenBy"}).
+		Build()
+	verifier.LoadFromObjects(graph, metaPath)
+	
+	config := DefaultMaterializationConfig()
+	result, err := verifier.VerifyMaterialization(config)
+
+	if err != nil {
+		t.Fatalf("Verification failed: %v", err)
+	}
+
+	// Print summary
+	PrintVerificationSummary(result)
+
+	// INVESTIGATE MISSING NODES
+	if result.GraphStats.OriginalGraph.NodeCount > result.GraphStats.MaterializedGraph.NodeCount {
+		fmt.Printf("\n🔍 INVESTIGATING MISSING NODES...\n")
+		investigation := verifier.InvestigateMissingNodes()
+		PrintMissingNodesReport(investigation)
+	}
+
+	// Check only critical failures (warnings/info are OK)
+	criticalFailures := 0
+	for _, test := range result.TestResults {
+		if !test.Passed && test.Severity == "critical" {
+			criticalFailures++
+			t.Errorf("CRITICAL FAILURE - %s: %s", test.Name, test.Description)
+		}
+	}
+
+	if criticalFailures > 0 {
+		t.Errorf("Found %d critical failures", criticalFailures)
+	}
+
+	// Log success for the important stuff
+	nodeCountTest := findTest(result.TestResults, "symmetric_node_count") 
+	if nodeCountTest != nil {
+		t.Logf("✅ Node count verification: %s", nodeCountTest.Actual)
+	}
+	
+	traversabilityTest := findTest(result.TestResults, "meta_path_traversable")
+	if traversabilityTest != nil {
+		t.Logf("✅ Meta path traversable: %t", traversabilityTest.Passed)
+	}
+	
+	t.Logf("✅ Materialized %d nodes, %d edges", 
+		result.GraphStats.MaterializedGraph.NodeCount,
+		result.GraphStats.MaterializedGraph.EdgeCount)
+}
+
+// Helper function to find a specific test result
+func findTest(results []TestResult, testName string) *TestResult {
+	for _, result := range results {
+		if result.Name == testName {
+			return &result
+		}
+	}
+	return nil
+}

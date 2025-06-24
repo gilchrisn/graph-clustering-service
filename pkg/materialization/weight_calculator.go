@@ -37,7 +37,7 @@ func (wc *WeightCalculator) ProcessGraph(graph *HomogeneousGraph) error {
 	}
 	
 	// Apply final filtering based on normalized weights
-	wc.applyFinalFiltering(graph)
+	// wc.applyFinalFiltering(graph)
 	
 	return nil
 }

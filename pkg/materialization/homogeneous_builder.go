@@ -37,6 +37,7 @@ func NewHomogeneousBuilder(metaPath *models.MetaPath, config AggregationConfig) 
 // AddInstance adds a path instance to the builder
 func (hb *HomogeneousBuilder) AddInstance(instance PathInstance) {
 	if !instance.IsValid() {
+		fmt.Printf("Skipping invalid instance: %v\n", instance)
 		return // Skip invalid instances
 	}
 	
@@ -92,6 +93,7 @@ func (hb *HomogeneousBuilder) Build() (*HomogeneousGraph, AggregationStats) {
 	hb.stats.EdgeGroupsProcessed = len(hb.instanceGroups)
 	hb.updateWeightDistribution(homogGraph)
 	
+	fmt.Printf("Homogeneous graph built with %d nodes and %d edges\n", len(homogGraph.Nodes), len(homogGraph.Edges))
 	return homogGraph, hb.stats
 }
 
