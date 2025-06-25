@@ -1,1241 +1,856 @@
 package scar
 
 import (
+	// "bufio"
 	"fmt"
-	// "math"
-	"math/rand"
+	"log"
+	"math"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
-	"sync"
 )
 
-// RunScar executes the complete SCAR algorithm with all fixes
-func RunScar(graph *HeterogeneousGraph, config ScarConfig) (*ScarResult, error) {
-	if !config.MetaPath.IsValid() {
-		return nil, fmt.Errorf("invalid meta-path: %v", config.MetaPath)
-	}
-
-	// Initialize random seed
-	rand.Seed(config.RandomSeed)
-
-	startTime := time.Now()
-	
-	// Initialize state with enhanced structures
-	state := &ScarState{
-		Graph:             graph,
-		Config:            config,
-		N2C:               make(map[string]int),
-		C2N:               make(map[int][]string),
-		Sketches:          make(map[string]*VertexBottomKSketch),
-		CommunitySketches: make(map[int]*VertexBottomKSketch),
-		CommunityCounter:  0,
-		Iteration:         0,
-		HashToNodeMap:     NewHashToNodeMap(),           // Added hash-to-node mapping
-		CommunityDegrees:  make(map[int]*DegreeEstimate), // Added degree tracking
-		NodeDegrees:       make(map[string]*DegreeEstimate),
-		CurrentLevel:      0,
-		NodeToOriginal:    make(map[string][]string),  // Added node to original mapping
-		MergePhase:        0, // Added three-phase merging
-	}
-
-	// Initialize node to original mapping
-	for _, nodeID := range graph.NodeList {
-		state.NodeToOriginal[nodeID] = []string{nodeID}
-	}
-
-	if config.Verbose {
-		fmt.Printf("Starting SCAR algorithm with K=%d, NK=%d, meta-path: %s\n", 
-			config.K, config.NK, config.MetaPath.String())
-	}
-
-	result := &ScarResult{
-		Levels:          make([]LevelInfo, 0),
-		HierarchyLevels: make([]map[string][]string, 0),
-		MappingLevels:   make([]map[string][]string, 0),
-	}
-
-	totalIterations := 0
-	
-	// Multi-level community detection
-	for level := 0; level < 1; level++ { // Just one level for now. 
-		if config.Verbose {
-			fmt.Printf("\n=== Level %d ===\n", level)
-		}
-
-		levelStart := time.Now()
-		state.CurrentLevel = level
-
-		// Iterative sketch construction with path-length iterations
-		if err := state.constructSketchesIteratively(); err != nil {
-			return nil, fmt.Errorf("failed to construct sketches at level %d: %v", level, err)
-		}
-
-		// Initialize communities (each node in its own community)
-		state.initializeCommunities()
-
-		// Calculate initial modularity
-		initialModularity := state.calculateModularity()
-		
-		if config.Verbose {
-			fmt.Printf("Initial modularity: %.6f\n", initialModularity)
-		}
-
-		// Three-phase iterative optimization
-		levelIterations := 0
-		improved := true
-		lastModularity := initialModularity
-
-		for improved && levelIterations < config.MaxIterations {
-			levelIterations++
-			totalIterations++
-			
-			// Set merge phase based on iteration
-			if levelIterations < 1 {
-				state.MergePhase = 0 // Initial best merge (quality optimization)
-			} else if levelIterations < 2 {
-				state.MergePhase = 1 // Quick best merge (greedy degree-based)
-			} else {
-				state.MergePhase = 2 // Sophisticated merge (E-function based)
-			}
-			
-			iterationImproved, err := state.executeOneIteration()
-			if err != nil {
-				return nil, fmt.Errorf("error in iteration %d at level %d: %v", 
-					levelIterations, level, err)
-			}
-
-			currentModularity := state.calculateModularity()
-			improvement := currentModularity - lastModularity
-
-			if config.Verbose {
-				fmt.Printf("Iteration %d (phase %d): modularity=%.6f, improvement=%.6f\n", 
-					levelIterations, state.MergePhase, currentModularity, improvement)
-			}
-
-			if config.ProgressCallback != nil {
-				config.ProgressCallback(level, levelIterations, currentModularity, len(state.Graph.NodeList))
-			}
-
-			// Check for convergence
-			if !iterationImproved || improvement < config.MinModularity {
-				improved = false
-			}
-
-			lastModularity = currentModularity
-		}
-
-		// Record level information
-		levelInfo := LevelInfo{
-			Level:       level,
-			Nodes:       len(state.Graph.NodeList),
-			Communities: len(state.C2N),
-			Modularity:  lastModularity,
-			Improvement: lastModularity - initialModularity,
-			Iterations:  levelIterations,
-			Duration:    time.Since(levelStart),
-			N2C:         make(map[string]int),
-			C2N:         make(map[int][]string),
-			NodeMapping: make(map[string][]string),
-		}
-
-		// Copy current state
-		for node, comm := range state.N2C {
-			levelInfo.N2C[node] = comm
-		}
-		for comm, nodes := range state.C2N {
-			levelInfo.C2N[comm] = make([]string, len(nodes))
-			copy(levelInfo.C2N[comm], nodes)
-		}
-		for node, originals := range state.NodeToOriginal {
-			levelInfo.NodeMapping[node] = make([]string, len(originals))
-			copy(levelInfo.NodeMapping[node], originals)
-		}
-
-		result.Levels = append(result.Levels, levelInfo)
-
-		if config.Verbose {
-			fmt.Printf("Level %d completed: %d nodes -> %d communities, modularity=%.6f\n",
-				level, levelInfo.Nodes, levelInfo.Communities, levelInfo.Modularity)
-		}
-
-		// Check if we should continue to next level
-		if len(state.C2N) == len(state.Graph.NodeList) || len(state.C2N) <= 1 {
-			break
-		}
-
-		// Aggregate communities for next level
-		// if err := state.aggregateCommunities(); err != nil {
-		// 	return nil, fmt.Errorf("failed to aggregate communities at level %d: %v", level, err)
-		// }
-	}
-
-	// Build final result
-	result.NumLevels = len(result.Levels)
-	if result.NumLevels > 0 {
-		result.Modularity = result.Levels[result.NumLevels-1].Modularity
-	}
-
-	// Build final community assignments for original nodes
-	result.FinalCommunities = state.buildFinalCommunities()
-
-	// Build statistics
-	result.Statistics = ScarStats{
-		TotalLevels:     result.NumLevels,
-		TotalIterations: totalIterations,
-		TotalDuration:   time.Since(startTime),
-		FinalModularity: result.Modularity,
-		InitialNodes:    len(graph.NodeList),
-		InitialEdges:    len(graph.Edges),
-	}
-
-	if result.NumLevels > 0 {
-		result.Statistics.FinalNodes = result.Levels[result.NumLevels-1].Nodes
-	}
-
-	// Build hierarchy and mapping levels for output compatibility
-	state.buildHierarchyAndMapping(result)
-
-	if config.Verbose {
-		fmt.Printf("\nSCAR completed: %d levels, final modularity=%.6f\n", 
-			result.NumLevels, result.Modularity)
-	}
-
-	return result, nil
+// SCARConfig holds configuration for SCAR algorithm
+type SCARConfig struct {
+	GraphFile    string
+	PropertyFile string
+	PathFile     string
+	OutputFile   string
+	EdgesFile    string
+	K            int64
+	NK           int64
+	Threshold    float64
 }
 
-// Iterative sketch construction following the original C++ algorithm
-func (s *ScarState) constructSketchesIteratively() error {
-	pathLength := len(s.Config.MetaPath.EdgeTypes) + 1
-
-	s.Graph.PrecomputeAdjacency()
-	
-	// Clear existing sketches
-	s.Sketches = make(map[string]*VertexBottomKSketch)
-	s.HashToNodeMap = NewHashToNodeMap()
-
-	// Initialize sketches for all nodes at all path positions
-	for _, nodeID := range s.Graph.NodeList {
-		s.Sketches[nodeID] = NewVertexBottomKSketch(s.Config.K, s.Config.NK, 0)
-	}
-
-	// Get source type nodes (first node type in meta-path)
-	sourceType := s.Config.MetaPath.NodeTypes[0]
-	sourceNodes := s.Graph.GetNodesByType(sourceType)
-
-	if len(sourceNodes) == 0 {
-		return fmt.Errorf("no nodes found for source type: %s", sourceType)
-	}
-
-	// Assign hash values to source nodes across all nK hash functions
-	for _, nodeID := range sourceNodes {
-		for hashFunc := 0; hashFunc < s.Config.NK; hashFunc++ {
-			hashValue := GenerateIndependentHashValue(nodeID, hashFunc, s.Config.RandomSeed)
-			s.Sketches[nodeID].AddValue(hashFunc, hashValue)
-			// Add to hash-to-node mapping
-			s.HashToNodeMap.AddMapping(hashValue, nodeID)
-		}
-	}
-
-	// Path-length iterations for sketch propagation
-    for iter := 1; iter < pathLength; iter++ {
-        
-        if s.Config.Verbose {
-            fmt.Printf("  Sketch construction iteration %d/%d (parallel=%v, workers=%d)\n", 
-                iter, pathLength-1, s.Config.Parallel.Enabled, s.Config.Parallel.NumWorkers)
-        }
-
-        // NEW: Use parallel or sequential processing based on config
-        var newSketches map[string]*VertexBottomKSketch
-        var err error
-        
-        if s.Config.Parallel.Enabled {
-            newSketches, err = s.propagateSketchesParallel(iter)
-        } else {
-            newSketches, err = s.propagateSketchesSequential(iter)
-        }
-        
-        if err != nil {
-            return fmt.Errorf("sketch propagation failed at iteration %d: %v", iter, err)
-        }
-
-        // Update sketches
-        s.Sketches = newSketches
-    }
-
-	// Calculate node degrees
-	s.NodeDegrees = make(map[string]*DegreeEstimate)
-	for nodeID, sketch := range s.Sketches {
-		s.NodeDegrees[nodeID] = sketch.EstimateDegree()
-	}
-
-	return nil
-}
-
-// propagateSketchesParallel implements parallel sketch propagation like Ligra
-func (s *ScarState) propagateSketchesParallel(iter int) (map[string]*VertexBottomKSketch, error) {
-    currentNodeType := s.Config.MetaPath.NodeTypes[iter-1]
-    nextNodeType := s.Config.MetaPath.NodeTypes[iter]
-    edgeType := s.Config.MetaPath.EdgeTypes[iter-1]
-    
-    // Build frontier: nodes that have sketches to propagate
-    frontier := make([]string, 0)
-    for _, nodeID := range s.Graph.NodeList {
-        if s.Graph.NodeTypes[nodeID] == currentNodeType && !s.Sketches[nodeID].IsEmpty() {
-            frontier = append(frontier, nodeID)
-        }
-    }
-    
-    if len(frontier) == 0 {
-        // No nodes to process, return empty sketches
-        return s.createEmptySketches(iter), nil
-    }
-    
-    if s.Config.Verbose {
-        fmt.Printf("    Processing frontier of %d nodes with %d workers\n", 
-            len(frontier), s.Config.Parallel.NumWorkers)
-    }
-    
-    // Create new sketches for this iteration
-    newSketches := s.createEmptySketches(iter)
-    
-    // Channel for collecting sketch updates
-    updateChan := make(chan SketchUpdate, s.Config.Parallel.UpdateBuffer)
-    
-    // Process frontier in parallel batches
-    var wg sync.WaitGroup
-    batchSize := s.Config.Parallel.BatchSize
-    
-    // Launch worker goroutines
-    for i := 0; i < s.Config.Parallel.NumWorkers; i++ {
-        start := i * batchSize
-        end := start + batchSize
-        if end > len(frontier) {
-            end = len(frontier)
-        }
-        if start >= len(frontier) {
-            break // No more work for this worker
-        }
-        
-        wg.Add(1)
-        go func(batchStart, batchEnd int) {
-            defer wg.Done()
-            s.processFrontierBatch(frontier[batchStart:batchEnd], edgeType, nextNodeType, updateChan)
-        }(start, end)
-    }
-    
-    // Close update channel when all workers finish
-    go func() {
-        wg.Wait()
-        close(updateChan)
-    }()
-    
-    // Collect updates and apply them to new sketches
-    updateCount := 0
-    for update := range updateChan {
-        newSketches[update.TargetNode].AddValue(update.HashFunc, update.Value)
-        updateCount++
-    }
-    
-    if s.Config.Verbose {
-        fmt.Printf("    Applied %d sketch updates\n", updateCount)
-    }
-    
-    return newSketches, nil
-}
-
-// processFrontierBatch processes a batch of frontier nodes in parallel
-func (s *ScarState) processFrontierBatch(batch []string, edgeType, nextNodeType string, updateChan chan<- SketchUpdate) {
-    for _, nodeID := range batch {
-        currentSketch := s.Sketches[nodeID]
-        if currentSketch.IsEmpty() {
-            continue
-        }
-
-        // Get neighbors using fast precomputed lookup
-        neighbors := s.Graph.GetNeighborsFast(nodeID, edgeType)
-        
-        for _, neighbor := range neighbors {
-            if s.Graph.NodeTypes[neighbor] == nextNodeType {
-                // Send sketch values to update channel (thread-safe)
-                for hashFunc := 0; hashFunc < s.Config.NK; hashFunc++ {
-                    for _, value := range currentSketch.Sketches[hashFunc] {
-                        updateChan <- SketchUpdate{
-                            TargetNode: neighbor,
-                            HashFunc:   hashFunc,
-                            Value:      value,
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// propagateSketchesSequential implements the original sequential version
-func (s *ScarState) propagateSketchesSequential(iter int) (map[string]*VertexBottomKSketch, error) {
-    currentNodeType := s.Config.MetaPath.NodeTypes[iter-1]
-    nextNodeType := s.Config.MetaPath.NodeTypes[iter]
-    edgeType := s.Config.MetaPath.EdgeTypes[iter-1]
-    
-    // Create new sketches for this iteration
-    newSketches := s.createEmptySketches(iter)
-
-    // Sequential processing (original logic)
-    for _, nodeID := range s.Graph.NodeList {
-        if s.Graph.NodeTypes[nodeID] != currentNodeType {
-            continue
-        }
-
-        currentSketch := s.Sketches[nodeID]
-        if currentSketch.IsEmpty() {
-            continue
-        }
-
-        neighbors := s.Graph.GetNeighborsFast(nodeID, edgeType)
-        
-        for _, neighbor := range neighbors {
-            if s.Graph.NodeTypes[neighbor] == nextNodeType {
-                for hashFunc := 0; hashFunc < s.Config.NK; hashFunc++ {
-                    for _, value := range currentSketch.Sketches[hashFunc] {
-                        newSketches[neighbor].AddValue(hashFunc, value)
-                    }
-                }
-            }
-        }
-    }
-    
-    return newSketches, nil
-}
-
-// createEmptySketches creates new sketch map for an iteration
-func (s *ScarState) createEmptySketches(iter int) map[string]*VertexBottomKSketch {
-    newSketches := make(map[string]*VertexBottomKSketch)
-    for _, nodeID := range s.Graph.NodeList {
-        newSketches[nodeID] = NewVertexBottomKSketch(s.Config.K, s.Config.NK, iter)
-    }
-    return newSketches
-}
-
-
-// Three-phase iteration execution
-func (s *ScarState) executeOneIteration() (bool, error) {
-	improved := false
-	
-	// Shuffle nodes for better convergence
-	nodes := make([]string, len(s.Graph.NodeList))
-	copy(nodes, s.Graph.NodeList)
-	rand.Shuffle(len(nodes), func(i, j int) {
-		nodes[i], nodes[j] = nodes[j], nodes[i]
-	})
-
-	for _, nodeID := range nodes {
-		currentCommunity := s.N2C[nodeID]
-		var bestCommunity int
-		var bestGain float64
-
-		// Use different merge strategies based on phase
-		switch s.MergePhase {
-		case 0:
-			// Initial best merge - quality optimization
-			bestCommunity, bestGain = s.initialBestMerge(nodeID)
-		case 1:
-			// Quick best merge - greedy degree-based
-			bestCommunity, bestGain = s.quickBestMerge(nodeID)
-		case 2:
-			// Sophisticated merge - E-function based
-			bestCommunity, bestGain = s.calculateBestMerge(nodeID)
-		default:
-			bestCommunity, bestGain = s.calculateBestMerge(nodeID)
-		}
-
-		// Move node if beneficial
-		if bestCommunity != currentCommunity && bestGain > 0 {
-			s.moveNodeToCommunity(nodeID, bestCommunity)
-			improved = true
-		}
-	}
-
-	return improved, nil
-}
-
-// Initial best merge - quality optimization
-func (s *ScarState) initialBestMerge(nodeID string) (int, float64) {
-	currentCommunity := s.N2C[nodeID]
-	bestCommunity := currentCommunity
-	bestGain := 0.0
-
-	// Find communities through sketch-based adjacency discovery
-	neighborCommunities := s.findCommunitiesThroughSketches(nodeID)
-	
-	for _, targetCommunity := range neighborCommunities {
-		if targetCommunity == currentCommunity {
-			continue
-		}
-
-		// Use simple modularity gain for initial phase
-		gain := s.estimateModularityGain(nodeID, targetCommunity)
-
-		if gain > bestGain {
-			bestGain = gain
-			bestCommunity = targetCommunity
-		}
-	}
-
-	return bestCommunity, bestGain
-}
-
-// Quick best merge - greedy degree-based
-func (s *ScarState) quickBestMerge(nodeID string) (int, float64) {
-	currentCommunity := s.N2C[nodeID]
-	bestCommunity := currentCommunity
-	bestGain := 0.0
-
-	neighborCommunities := s.findCommunitiesThroughSketches(nodeID)
-	nodeDegree := s.NodeDegrees[nodeID]
-	
-	for _, targetCommunity := range neighborCommunities {
-		if targetCommunity == currentCommunity {
-			continue
-		}
-
-		// Quick degree-based estimation
-		targetDegree := s.CommunityDegrees[targetCommunity]
-		if targetDegree == nil {
-			continue
-		}
-
-		// Simple degree-based gain
-		gain := nodeDegree.Value * targetDegree.Value / float64(len(s.Graph.Edges))
-		if gain > bestGain {
-			bestGain = gain
-			bestCommunity = targetCommunity
-		}
-	}
-
-	return bestCommunity, bestGain
-}
-
-// Sophisticated merge using E-function
-func (s *ScarState) calculateBestMerge(nodeID string) (int, float64) {
-	currentCommunity := s.N2C[nodeID]
-	bestCommunity := currentCommunity
-	bestGain := 0.0
-
-	neighborCommunities := s.findCommunitiesThroughSketches(nodeID)
-	
-	for _, targetCommunity := range neighborCommunities {
-		if targetCommunity == currentCommunity {
-			continue
-		}
-
-		// Calculate E-function
-		eResult := s.calculateEFunction(nodeID, targetCommunity)
-		if eResult.Value > bestGain {
-			bestGain = eResult.Value
-			bestCommunity = targetCommunity
-		}
-	}
-
-	return bestCommunity, bestGain
-}
-
-// E-function calculation following original algorithm
-func (s *ScarState) calculateEFunction(nodeID string, targetCommunity int) *EFunctionResult {
-	nodeSketch := s.Sketches[nodeID]
-	communitySketch := s.CommunitySketches[targetCommunity]
-	
-	if nodeSketch == nil || communitySketch == nil {
-		return &EFunctionResult{Value: 0}
-	}
-
-	// Calculate community sizes and degrees
-	c1Size := s.NodeDegrees[nodeID].Value
-	c2Size := s.CommunityDegrees[targetCommunity].Value
-	
-	// Calculate intersection using sophisticated method
-	intersectK := nodeSketch.EstimateIntersectionWith(communitySketch)
-	
-	// Calculate total weight (total edges)
-	wholeWeight := float64(len(s.Graph.Edges) * 2) // Undirected edges counted twice
-	
-	// Calculate expected edges
-	n1 := 1.0 // Single node
-	n2 := float64(len(s.C2N[targetCommunity]))
-	expectedEdges := (n1 * n2) / (2.0 * wholeWeight)
-	
-	// E-function formula: c1Size + C2 - intersectK - (n1×n2)/(2×wholeWeight)
-	eValue := c1Size + c2Size - intersectK - expectedEdges
-	
-	return &EFunctionResult{
-		Value:         eValue,
-		C1Size:        c1Size,
-		C2Size:        c2Size,
-		IntersectK:    intersectK,
-		ExpectedEdges: expectedEdges,
-		ActualEdges:   intersectK, // Approximation
-	}
-}
-
-// Find communities through sketch-based adjacency discovery
-func (s *ScarState) findCommunitiesThroughSketches(nodeID string) []int {
-	communities := make(map[int]bool)
-	nodeSketch := s.Sketches[nodeID]
-	
-	if nodeSketch == nil {
-		return []int{s.N2C[nodeID]} // Return current community if no sketch
-	}
-
-	// Get all hash values from the node's sketch
-	allHashValues := nodeSketch.GetAllHashValues()
-	
-	// For each hash value, find corresponding nodes through hash-to-node mapping
-	for _, hashValue := range allHashValues {
-		if adjacentNodeID, exists := s.HashToNodeMap.GetNode(hashValue); exists {
-			if adjacentNodeID != nodeID { // Don't include self
-				if adjacentCommunity, exists := s.N2C[adjacentNodeID]; exists {
-					communities[adjacentCommunity] = true
-				}
-			}
-		}
-	}
-	
-	// Also check communities of nodes that have overlapping sketches
-	for otherNodeID, otherSketch := range s.Sketches {
-		if otherNodeID != nodeID && otherSketch != nil {
-			// Check for sketch overlap
-			if HasSketchOverlap(nodeSketch, otherSketch, 0.1) { // 10% overlap threshold
-				if otherCommunity, exists := s.N2C[otherNodeID]; exists {
-					communities[otherCommunity] = true
-				}
-			}
-		}
-	}
-	
-	// Add current community
-	communities[s.N2C[nodeID]] = true
-	
-	result := make([]int, 0, len(communities))
-	for community := range communities {
-		result = append(result, community)
-	}
-	
-	return result
-}
-
-// Enhanced community initialization with degree calculation
-func (s *ScarState) initializeCommunities() {
-	s.N2C = make(map[string]int)
-	s.C2N = make(map[int][]string)
-	s.CommunitySketches = make(map[int]*VertexBottomKSketch) // Added community sketches
-	s.CommunityDegrees = make(map[int]*DegreeEstimate) // Added community degree estimates
-	s.CommunityCounter = 0
-
-	for _, nodeID := range s.Graph.NodeList {
-		communityID := s.CommunityCounter
-		s.N2C[nodeID] = communityID
-		s.C2N[communityID] = []string{nodeID}
-		
-		// Initialize community sketch with node's sketch
-		nodeSketch := s.Sketches[nodeID]
-		if nodeSketch != nil {
-			s.CommunitySketches[communityID] = nodeSketch.Clone()
-			s.CommunityDegrees[communityID] = nodeSketch.EstimateDegree()
-		} else {
-			fmt.Printf("Warning: No sketch found for node %s\n", nodeID)
-		}
-
-		s.CommunityCounter++
-	}
-}
-
-// Enhanced modularity calculation using sophisticated degree estimation
-
-func (s *ScarState) calculateModularity() float64 {
-	if len(s.Graph.Edges) == 0 {
-		return 0
-	}
-	
-	totalEdges := float64(len(s.Graph.Edges))
-	modularity := 0.0
-	
-	// Calculate in[] and tot[] arrays 
-	in := make(map[int]float64)   // internal edges per community
-	tot := make(map[int]float64)  // total degree per community
-	
-	// Initialize
-	for communityID := range s.C2N {
-		in[communityID] = 0
-		tot[communityID] = 0
-	}
-	
-	// Calculate total degrees (tot[])
-	for communityID, nodes := range s.C2N {
-		for _, nodeID := range nodes {
-			if degree := s.NodeDegrees[nodeID]; degree != nil {
-				tot[communityID] += degree.Value
-			}
-		}
-	}
-	
-	// Calculate internal edges (in[]) using sketch-based estimation
-	for communityID, nodes := range s.C2N {
-		internalEdges := s.estimateInternalEdges(communityID, nodes)
-		in[communityID] = internalEdges
-	}
-	
-	// Apply modularity formula: Q = Σ[(in[i] - tot[i]²/(2m))] / (2m)
-	for communityID := range s.C2N {
-		if tot[communityID] > 0 {
-			expectedEdges := (tot[communityID] * tot[communityID]) / (2.0 * totalEdges)
-			deltaQ := in[communityID] - expectedEdges
-			modularity += deltaQ
-		}
-	}
-	
-	modularity /= (2.0 * totalEdges)
-	return modularity
-}
-
-// Estimate internal edges within a community using sketches
-func (s *ScarState) estimateInternalEdges(communityID int, nodes []string) float64 {
-	if len(nodes) <= 1 {
-		return 0
-	}
-	
-	totalInternalEdges := 0.0
-	
-	// Method 1: For small communities, check all pairs
-	if len(nodes) <= 10 {
-		for i := 0; i < len(nodes); i++ {
-			for j := i + 1; j < len(nodes); j++ {
-				node1 := nodes[i]
-				node2 := nodes[j]
-				
-				sketch1 := s.Sketches[node1]
-				sketch2 := s.Sketches[node2]
-				
-				if sketch1 != nil && sketch2 != nil {
-					// Estimate edges between these two nodes
-					intersection := sketch1.EstimateIntersectionWith(sketch2)
-					// Normalize by nK to avoid double counting
-					totalInternalEdges += intersection / float64(s.Config.NK)
-				}
-			}
-		}
-	} else {
-		// Method 2: For large communities, use community sketch
-		communitySketch := s.CommunitySketches[communityID]
-		if communitySketch != nil {
-			// Estimate using community sketch self-intersection
-			// This approximates the internal connectivity
-			totalInternalEdges = s.estimateCommunityInternalEdges(communitySketch, len(nodes))
-		}
-	}
-	
-	return totalInternalEdges
-}
-
-// Estimate internal edges for large communities using community sketch
-func (s *ScarState) estimateCommunityInternalEdges(communitySketch *VertexBottomKSketch, numNodes int) float64 {
-	if communitySketch == nil || numNodes <= 1 {
-		return 0
-	}
-	
-	// Use the community's total degree and apply a density estimation
-	communityDegree := s.CommunityDegrees[s.findCommunityID(communitySketch)]
-	if communityDegree == nil {
-		return 0
-	}
-	
-	// Estimate internal density based on sketch saturation
-	// More sophisticated communities have higher internal connectivity
-	densityFactor := 0.5 // Default 50% internal
-	if communityDegree.IsSaturated {
-		densityFactor = 0.7 // Higher internal connectivity for saturated sketches
-	}
-	
-	// Estimate internal edges as fraction of total degree
-	totalDegree := communityDegree.Value
-	estimatedInternalEdges := totalDegree * densityFactor
-	
-	return estimatedInternalEdges
-}
-
-// Helper to find community ID from sketch (needed for the above function)
-func (s *ScarState) findCommunityID(targetSketch *VertexBottomKSketch) int {
-	for communityID, sketch := range s.CommunitySketches {
-		if sketch == targetSketch {
-			return communityID
-		}
-	}
-	return -1 // Not found
-}
-
-// Enhanced move node with proper sketch and degree updates
-func (s *ScarState) moveNodeToCommunity(nodeID string, newCommunity int) {
-	oldCommunity := s.N2C[nodeID]
-	
-	if oldCommunity == newCommunity {
-		return // No change needed
-	}
-	
-	// Remove from old community
-	oldNodes := s.C2N[oldCommunity]
-	for i, node := range oldNodes {
-		if node == nodeID {
-			s.C2N[oldCommunity] = append(oldNodes[:i], oldNodes[i+1:]...)
-			break
-		}
-	}
-	
-	// Add to new community
-	s.N2C[nodeID] = newCommunity
-	s.C2N[newCommunity] = append(s.C2N[newCommunity], nodeID)
-	
-	// Update community sketches and degrees
-	s.updateCommunitySketchAndDegree(oldCommunity)
-	s.updateCommunitySketchAndDegree(newCommunity)
-}
-
-// Update community sketch and degree estimation
-func (s *ScarState) updateCommunitySketchAndDegree(communityID int) {
-	communityNodes := s.C2N[communityID]
-	if len(communityNodes) == 0 {
-		// Empty community
-		delete(s.CommunitySketches, communityID)
-		delete(s.CommunityDegrees, communityID)
-		delete(s.C2N, communityID)
+// RunSCAR executes the SCAR community detection algorithm
+func RunSCAR(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: RunSCAR([]string{\"<inFile>\", \"[options]\"})") 
 		return
 	}
 	
-	// Collect sketches from community members
-	memberSketches := make([]*VertexBottomKSketch, 0, len(communityNodes))
-	for _, nodeID := range communityNodes {
-		if sketch := s.Sketches[nodeID]; sketch != nil {
-			memberSketches = append(memberSketches, sketch)
+	// Parse command line arguments
+	var (
+		iFile         = args[0]
+		outputFile    = "output.txt"
+		edgelistFile  = ""
+		propertyFile  = ""
+		pathFile      = ""
+		k        int64 = 10
+		nk       int64 = 4
+		threshold     = 0.5
+	)
+	
+	// Parse additional arguments
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-o=") {
+			outputFile = strings.TrimPrefix(arg, "-o=")
+		} else if strings.HasPrefix(arg, "-edges=") {
+			edgelistFile = strings.TrimPrefix(arg, "-edges=")
+		} else if strings.HasPrefix(arg, "-pro=") {
+			propertyFile = strings.TrimPrefix(arg, "-pro=")
+		} else if strings.HasPrefix(arg, "-path=") {
+			pathFile = strings.TrimPrefix(arg, "-path=")
+		} else if strings.HasPrefix(arg, "-k=") {
+			if val, err := strconv.ParseInt(strings.TrimPrefix(arg, "-k="), 10, 64); err == nil {
+				k = val
+			}
+		} else if strings.HasPrefix(arg, "-nk=") {
+			if val, err := strconv.ParseInt(strings.TrimPrefix(arg, "-nk="), 10, 64); err == nil {
+				nk = val
+			}
+		} else if strings.HasPrefix(arg, "-th=") {
+			if val, err := strconv.ParseFloat(strings.TrimPrefix(arg, "-th="), 64); err == nil {
+				threshold = val
+			}
 		}
 	}
 	
-	// Merge sketches
-	if len(memberSketches) > 0 {
-		s.CommunitySketches[communityID] = MergeSketches(memberSketches)
-		s.CommunityDegrees[communityID] = s.CommunitySketches[communityID].EstimateDegree()
+	fmt.Println("Start reading graph")
+	
+	// Read graph using the new structure
+	G := ReadGraphFromFile(iFile)
+	n := G.n
+	pathLength := int64(10)
+	
+	startTime := time.Now()
+	
+	// Initialize arrays
+	oldSketches := make([]uint32, pathLength*n*k*nk)
+	for i := range oldSketches {
+		oldSketches[i] = math.MaxUint32
+	}
+	
+	nodeHashValue := make([]uint32, n*nk)
+	vertexProperties := ReadProperties(propertyFile, n)
+	path, actualPathLength := ReadPath(pathFile)
+	pathLength = actualPathLength
+	
+	fmt.Println("Start get graph parameters")
+	
+	// Compute sketch
+	ComputeSketchForGraph(G, oldSketches, path, pathLength, vertexProperties, nodeHashValue, k, nk)
+	
+	sketches := oldSketches[(pathLength-1)*n*k*nk:]
+	
+	// Add 1 to all sketches
+	for i := range sketches {
+		if sketches[i] != math.MaxUint32 {
+			sketches[i]++
+		}
+	}
+	
+	// Create new hash value table and sketch array for nodes with non-zero hash values
+	hashToNodeMap := make(map[uint32]int64)
+	communitySketches := make(map[int64][]uint32)
+	degreeSketches := make([]uint32, n)
+	var communityDegreeSketches []uint32
+	var nodesInCommunity []int64
+	
+	calculateNewSketchesAndMappings(n, k, nk, sketches, nodeHashValue, hashToNodeMap, communitySketches, degreeSketches, &communityDegreeSketches, &nodesInCommunity)
+	
+	// Reconstruct edges from sketches if needed
+	if edgelistFile != "" {
+		reconstructEdges(edgelistFile, nodesInCommunity, communitySketches, hashToNodeMap)
+	}
+	
+	fmt.Println("Finish calculate sketches")
+	
+	// Assign initial communities
+	community := make([]int64, n)
+	for i := range community {
+		community[i] = -1
+	}
+	assignInitialCommunities(nodesInCommunity, community)
+	
+	// Calculate whole weight
+	wholeWeight := 0.0
+	for _, degree := range communityDegreeSketches {
+		wholeWeight += float64(degree)
+	}
+	wholeWeight /= 2.0
+	fmt.Printf("Whole weight: %f\n", wholeWeight)
+	
+	fmt.Println("Finish calculate sketches and mappings")
+	
+	// Create a table to store community edge connections
+	communityEdgeTable := make(map[int64]map[int64]bool)
+	findCommunityEdges(hashToNodeMap, communitySketches, community, k, communityEdgeTable)
+	
+	// Initialize nodesInCommunities
+	nodesInCommunities := make(map[int64][]int64)
+	for i := int64(0); i < n; i++ {
+		if community[i] != -1 {
+			nodesInCommunities[community[i]] = append(nodesInCommunities[community[i]], i)
+		}
+	}
+	
+	fmt.Println("Finish Initialization of the community")
+	
+	// Iterate for community detection
+	for iter := 0; iter < 20; iter++ {
+		start := time.Now()
+		fmt.Printf("Number of communities: %d\n", len(communitySketches))
+		
+		bestE := make([]float64, n)
+		for i := range bestE {
+			bestE[i] = 0.00001 * wholeWeight
+		}
+		
+		var newCommunities [][]int64
+		
+		if iter < 1 {
+			initialBestMerge(k, communityEdgeTable, communitySketches, community, bestE, nodesInCommunities, &newCommunities, communityDegreeSketches, wholeWeight)
+		} else if iter < 2 {
+			quickBestMerge(k, communityEdgeTable, communitySketches, community, bestE, nodesInCommunities, &newCommunities, communityDegreeSketches, wholeWeight)
+		} else {
+			calculateBestMerge(k, nk, iter, threshold, communityEdgeTable, communitySketches, community, bestE, nodesInCommunities, &newCommunities, communityDegreeSketches, nodeHashValue, wholeWeight)
+		}
+		
+		if len(newCommunities) == 0 {
+			break
+		}
+		fmt.Printf("New communities: %d\n", len(newCommunities))
+		
+		// Create new community hash values for the next iteration
+		mergedSketches := make(map[int64][]uint32)
+		mergeCommunities(k, nk, community, communitySketches, mergedSketches, newCommunities, nodesInCommunities)
+		
+		// Recalculate the community edge table after merging communities
+		newCommunityEdgeTable := make(map[int64]map[int64]bool)
+		mergeEdgeTable(communityEdgeTable, newCommunities, newCommunityEdgeTable)
+		
+		// Update community sketches and edge table after merging
+		communitySketches = mergedSketches
+		communityEdgeTable = newCommunityEdgeTable
+		
+		// Recalculate community degree sketches
+		communityDegreeSketches = communityDegreeSketches[:0]
+		for i := int64(0); i < int64(len(communitySketches)); i++ {
+			currentSketch := uint32(0)
+			count := uint32(0)
+			for _, sketch := range communitySketches[i] {
+				count++
+				if sketch > currentSketch {
+					currentSketch = sketch
+				}
+			}
+			if currentSketch != 0 {
+				if count >= uint32(k-1) {
+					degree := uint32(float64(math.MaxUint32)/float64(currentSketch) * float64(k-1))
+					communityDegreeSketches = append(communityDegreeSketches, degree)
+				} else {
+					communityDegreeSketches = append(communityDegreeSketches, count)
+				}
+			} else {
+				communityDegreeSketches = append(communityDegreeSketches, 1)
+			}
+		}
+		
+		fmt.Printf("Merge time: %v\n", time.Since(start))
+	}
+	
+	fmt.Printf("Community detection time: %v\n", time.Since(startTime))
+	
+	// Write output
+	writeOutput(outputFile, community, n)
+	
+	// Calculate and print modularity
+	calculateModularity(communitySketches, nodesInCommunities, degreeSketches, community, hashToNodeMap, sketches, k, wholeWeight)
+}
+
+// RunSCARWithConfig runs SCAR with configuration struct
+func RunSCARWithConfig(config SCARConfig) error {
+	args := []string{config.GraphFile}
+	
+	if config.PropertyFile != "" {
+		args = append(args, "-pro="+config.PropertyFile)
+	}
+	if config.PathFile != "" {
+		args = append(args, "-path="+config.PathFile)
+	}
+	if config.OutputFile != "" {
+		args = append(args, "-o="+config.OutputFile)
+	}
+	if config.EdgesFile != "" {
+		args = append(args, "-edges="+config.EdgesFile)
+	}
+	if config.K > 0 {
+		args = append(args, fmt.Sprintf("-k=%d", config.K))
+	}
+	if config.NK > 0 {
+		args = append(args, fmt.Sprintf("-nk=%d", config.NK))
+	}
+	if config.Threshold > 0 {
+		args = append(args, fmt.Sprintf("-th=%f", config.Threshold))
+	}
+	
+	RunSCAR(args)
+	return nil
+}
+
+// Helper functions - keep only one copy of each
+
+func reconstructEdges(edgelistFile string, nodesInCommunity []int64, communitySketches map[int64][]uint32, hashToNodeMap map[uint32]int64) {
+	file, err := os.Create(edgelistFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	
+	uniqueEdges := make(map[string]bool)
+	
+	// For each node that has a sketch
+	for nodeIndex, currentNode := range nodesInCommunity {
+		// Look at all sketch values for this node
+		if sketches, exists := communitySketches[int64(nodeIndex)]; exists {
+			for _, sketchValue := range sketches {
+				// Check if this sketch value corresponds to another node
+				if neighborNode, exists := hashToNodeMap[sketchValue]; exists {
+					// Avoid self-loops and duplicate edges
+					if currentNode != neighborNode {
+						// Store edge in canonical form (smaller node first)
+						src := currentNode
+						dst := neighborNode
+						if src > dst {
+							src, dst = dst, src
+						}
+						edgeKey := fmt.Sprintf("%d_%d", src, dst)
+						if !uniqueEdges[edgeKey] {
+							uniqueEdges[edgeKey] = true
+							fmt.Fprintf(file, "%d %d\n", src, dst)
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	fmt.Printf("Reconstructed %d edges\n", len(uniqueEdges))
+}
+
+func writeOutput(outputFile string, community []int64, n int64) {
+	file, err := os.Create(outputFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	
+	for i := int64(0); i < n; i++ {
+		if community[i] == -1 {
+			continue
+		}
+		fmt.Fprintf(file, "%d %d\n", i, community[i])
 	}
 }
 
-// Simple modularity gain estimation (used in initial phase)
-func (s *ScarState) estimateModularityGain(nodeID string, targetCommunity int) float64 {
-	nodeSketch := s.Sketches[nodeID]
-	communitySketch := s.CommunitySketches[targetCommunity]
+func calculateModularity(communitySketches map[int64][]uint32, nodesInCommunities map[int64][]int64, degreeSketches []uint32, community []int64, hashToNodeMap map[uint32]int64, sketches []uint32, k int64, wholeWeight float64) {
+	sumQ := 0.0
 	
-	if nodeSketch == nil || communitySketch == nil {
-		fmt.Printf("Warning: Sketches missing for node %s or community %d\n", nodeID, targetCommunity)
-		return 0.0
+	for i := int64(0); i < int64(len(communitySketches)); i++ {
+		currentCommunity := i
+		
+		degreeSum := 0.0
+		kij := 0.0
+		
+		if nodes, exists := nodesInCommunities[currentCommunity]; exists {
+			for _, node := range nodes {
+				degreeSum += float64(degreeSketches[node])
+				for j := int64(0); j < k; j++ {
+					sketchIdx := j + node*k
+					if int(sketchIdx) < len(sketches) {
+						if neighborNode, exists := hashToNodeMap[sketches[sketchIdx]]; exists {
+							if community[neighborNode] == currentCommunity {
+								kij += 1
+							}
+						}
+					}
+				}
+				if degreeSketches[node] > uint32(k) {
+					kij *= float64(degreeSketches[node]) / float64(k)
+				}
+			}
+		}
+		
+		deltaSumQ := kij - (degreeSum*degreeSum)/(2*wholeWeight)
+		deltaSumQ /= (2 * wholeWeight)
+		sumQ += deltaSumQ
 	}
 	
-	nodeDegree := s.NodeDegrees[nodeID].Value
-	communityDegree := s.CommunityDegrees[targetCommunity].Value
-	
-	// Estimate edges between node and community
-	edgesToTarget := nodeSketch.EstimateIntersectionWith(communitySketch)
-	
-	totalEdges := float64(len(s.Graph.Edges))
-	if totalEdges == 0 {
-		return 0
-	}
-
-	// Simplified modularity gain
-	gain := (edgesToTarget / totalEdges) - (nodeDegree * communityDegree) / (4 * totalEdges * totalEdges)
-	
-	return gain
+	fmt.Printf("Modularity: %f\n", sumQ)
 }
 
+// All the other algorithm functions go here (calculateNewSketchesAndMappings, mergeEdgeTable, etc.)
 
-// aggregateCommunities creates a new graph where communities become nodes
-func (s *ScarState) aggregateCommunities() error {
-	newGraph := NewHeterogeneousGraph()
-	newNodeToOriginal := make(map[string][]string)
+func calculateNewSketchesAndMappings(
+	n, k, nk int64,
+	sketches []uint32,
+	nodeHashValue []uint32,
+	hashToNodeMap map[uint32]int64,
+	communitySketches map[int64][]uint32,
+	degreeSketches []uint32,
+	communityDegreeSketches *[]uint32,
+	nodesInCommunity *[]int64,
+) {
+	for i := int64(0); i < n; i++ {
+		if nodeHashValue[i*nk] != 0 {
+			if sketches[i*k+1] == 0 {
+				continue
+			}
+			currentNodeIndex := int64(len(*nodesInCommunity))
+			for j := int64(0); j < nk; j++ {
+				hashToNodeMap[nodeHashValue[i*nk+j]] = i
+			}
+			*nodesInCommunity = append(*nodesInCommunity, i)
+			*communityDegreeSketches = append(*communityDegreeSketches, 0)
+			degreeSketches[i] = 0
+			
+			for j := int64(0); j < nk; j++ {
+				flag := false
+				var currentSketch uint32 = 0
+				for ki := int64(0); ki < k; ki++ {
+					if sketches[j*n*k+i*k+ki] != 0 {
+						currentSketch = sketches[j*n*k+i*k+ki]
+						communitySketches[currentNodeIndex] = append(communitySketches[currentNodeIndex], currentSketch)
+					} else {
+						flag = true
+						degreeSketches[i] += uint32(ki - 1)
+						break
+					}
+				}
+				
+				if (!flag) && (currentSketch != 0) {
+					degreeSketches[i] += uint32(float64(math.MaxUint32)/float64(currentSketch) * float64(k-1))
+				}
+			}
+			degreeSketches[i] /= uint32(nk)
+			(*communityDegreeSketches)[currentNodeIndex] = degreeSketches[i]
+		}
+	}
+}
+
+func mergeEdgeTable(
+	oldEdgeTable map[int64]map[int64]bool,
+	newCommunities [][]int64,
+	newEdgeTable map[int64]map[int64]bool,
+) {
+	// Create a mapping from old community IDs to new community IDs
+	oldToNewMap := make(map[int64]int64)
+	for newCommId := 0; newCommId < len(newCommunities); newCommId++ {
+		commsToMerge := newCommunities[newCommId]
+		for _, oldComm := range commsToMerge {
+			oldToNewMap[oldComm] = int64(newCommId)
+		}
+	}
 	
-	// Create supernode for each community
-	communityToSupernode := make(map[int]string)
-	supernodeCounter := 0
+	// Iterate through each old community in the old edge table
+	for oldComm, neighbors := range oldEdgeTable {
+		// Check if the old community has a corresponding new community
+		if newCommId, exists := oldToNewMap[oldComm]; exists {
+			// Iterate through the neighbors of the old community
+			for neighborComm := range neighbors {
+				// Check if the neighbor community also has a mapping
+				if newNeighborComm, exists := oldToNewMap[neighborComm]; exists {
+					if newNeighborComm != newCommId {
+						if newEdgeTable[newCommId] == nil {
+							newEdgeTable[newCommId] = make(map[int64]bool)
+						}
+						newEdgeTable[newCommId][newNeighborComm] = true
+					}
+				}
+			}
+		}
+	}
+}
+
+func findCommunityEdges(
+	hashToNodeMap map[uint32]int64,
+	communitySketches map[int64][]uint32,
+	community []int64,
+	k int64,
+	communityEdgeTable map[int64]map[int64]bool,
+) {
+	for _, mappedNodeId := range hashToNodeMap {
+		originalNodeId := mappedNodeId
+		currentCommunity := community[originalNodeId]
+		
+		for _, sketchValue := range communitySketches[currentCommunity] {
+			if neighborNodeId, exists := hashToNodeMap[sketchValue]; exists {
+				neighborCommunity := community[neighborNodeId]
+				if currentCommunity != neighborCommunity {
+					if communityEdgeTable[currentCommunity] == nil {
+						communityEdgeTable[currentCommunity] = make(map[int64]bool)
+					}
+					communityEdgeTable[currentCommunity][neighborCommunity] = true
+				}
+			}
+		}
+	}
+}
+
+func calculateEFunction(
+	c1Size int64,
+	C2, IntersectK float64,
+	k int64,
+	n1, n2, wholeWeight float64,
+) float64 {
+	return float64(c1Size) + C2 - IntersectK - (n1*n2)/(2*wholeWeight)
+}
+
+func assignInitialCommunities(nodeCommunityMap []int64, community []int64) {
+	communityId := int64(0)
+	for _, nodeId := range nodeCommunityMap {
+		community[nodeId] = communityId
+		communityId++
+	}
+}
+
+func qualityFunction(in []int64, tot []int64, wholeWeight float64) float64 {
+	Q := 0.0
+	for i := 0; i < len(in); i++ {
+		deltaQ := float64(in[i]) - float64(tot[i])*float64(tot[i])/(2*wholeWeight)
+		Q += deltaQ
+		if deltaQ > 1e8 || deltaQ < -1e8 {
+			fmt.Printf("Community: %d\n", i)
+			fmt.Printf(" In: %d Tot: %d DeltaQ: %f\n", in[i], tot[i], deltaQ)
+		}
+	}
+	Q /= (2 * wholeWeight)
+	return Q
+}
+
+func removeQuality(
+	in []int64,
+	tot []int64,
+	n2c map[int64]int64,
+	nodeDegree int64,
+	node, nodeCommunity int64,
+	value float64,
+) {
+	if nodeCommunity < 0 || nodeCommunity >= int64(len(in)) {
+		panic("invalid community index")
+	}
 	
-	for communityID, nodes := range s.C2N {
-		if len(nodes) == 0 {
+	in[nodeCommunity] -= int64(value * 2)
+	tot[nodeCommunity] -= nodeDegree
+	n2c[node] = -1
+}
+
+func insertQuality(
+	in []int64,
+	tot []int64,
+	n2c map[int64]int64,
+	nodeDegree int64,
+	node, nodeCommunity int64,
+	value float64,
+) {
+	if nodeCommunity < 0 || nodeCommunity >= int64(len(in)) {
+		panic("invalid community index")
+	}
+	
+	in[nodeCommunity] += int64(value * 2)
+	tot[nodeCommunity] += nodeDegree
+	n2c[node] = nodeCommunity
+}
+
+func gainQuality(
+	in []int64,
+	tot []int64,
+	n2c map[int64]int64,
+	node, nodeCommunity, neighborCommunity int64,
+	dnc, degc, wholeWeight float64,
+) float64 {
+	if neighborCommunity < 0 || neighborCommunity >= int64(len(in)) {
+		panic("invalid neighbor community index")
+	}
+	
+	totc := float64(tot[neighborCommunity])
+	return dnc - totc*degc/wholeWeight/2
+}
+
+func initialBestMerge(
+	k int64,
+	communityEdgeTable map[int64]map[int64]bool,
+	communitySketches map[int64][]uint32,
+	community []int64,
+	bestE []float64,
+	nodesInCommunities map[int64][]int64,
+	newCommunities *[][]int64,
+	communityDegreeSketches []uint32,
+	wholeWeight float64,
+) {
+	// Initial community assignment
+	n2c := make(map[int64]int64)
+	var nodeId []int64
+	in := make([]int64, len(communityDegreeSketches))
+	tot := make([]int64, len(communityDegreeSketches))
+	nodeDegreeSketch := make(map[int64]int64)
+	
+	for i := range in {
+		in[i] = 0
+		tot[i] = 1
+	}
+	
+	oldQuality := qualityFunction(in, tot, wholeWeight)
+	newQuality := oldQuality
+	
+	for comm, nodes := range nodesInCommunities {
+		for _, node := range nodes {
+			n2c[node] = comm
+			nodeId = append(nodeId, node)
+			nodeDegreeSketch[node] = int64(communityDegreeSketches[comm])
+		}
+	}
+	
+	for i := 0; i < len(communityDegreeSketches); i++ {
+		tot[i] = int64(communityDegreeSketches[i])
+	}
+	
+	iter := 0
+	for {
+		for i := 0; i < len(nodeId); i++ {
+			node := nodeId[i]
+			nodeCommunity := n2c[node]
+			
+			neighborCommunity := make(map[int64]bool)
+			neighborCommunityWeight := make(map[int64]int64)
+			neighborCommunityWeight[nodeCommunity] = 0
+			
+			if neighbors, exists := communityEdgeTable[nodeCommunity]; exists {
+				for neighborCommunityId := range neighbors {
+					if nodes, exists := nodesInCommunities[neighborCommunityId]; exists && len(nodes) > 0 {
+						neighbor := nodes[0]
+						if neighbor == node {
+							continue
+						}
+						
+						neighborComm := n2c[neighbor]
+						neighborCommunity[neighborComm] = true
+						neighborCommunityWeight[neighborComm]++
+					}
+				}
+			}
+			
+			removeQuality(in, tot, n2c, nodeDegreeSketch[node], node, nodeCommunity, oldQuality)
+			bestNeighborCommunity := nodeCommunity
+			bestIncrease := 0.0
+			bestWeight := 0.0
+			
+			for nei, weight := range neighborCommunityWeight {
+				increase := gainQuality(in, tot, n2c, node, nodeCommunity, nei, float64(weight), float64(nodeDegreeSketch[node]), wholeWeight)
+				if increase > bestIncrease {
+					bestIncrease = increase
+					bestNeighborCommunity = nei
+					bestWeight = float64(weight)
+				}
+			}
+			
+			insertQuality(in, tot, n2c, nodeDegreeSketch[node], node, bestNeighborCommunity, bestWeight)
+		}
+		
+		newQuality = qualityFunction(in, tot, wholeWeight)
+		iter++
+		
+		if !(newQuality > oldQuality && iter < 20) {
+			break
+		}
+		oldQuality = newQuality
+	}
+	
+	// Generate newCommunities based on n2c
+	tempNewCommunities := make(map[int64][]int64)
+	for node, communityId := range n2c {
+		tempNewCommunities[communityId] = append(tempNewCommunities[communityId], community[node])
+	}
+	
+	// Convert tempNewCommunities to the format of newCommunities
+	*newCommunities = (*newCommunities)[:0]
+	for _, comms := range tempNewCommunities {
+		*newCommunities = append(*newCommunities, comms)
+	}
+}
+
+func quickBestMerge(
+	k int64,
+	communityEdgeTable map[int64]map[int64]bool,
+	communitySketches map[int64][]uint32,
+	community []int64,
+	bestE []float64,
+	nodesInCommunities map[int64][]int64,
+	newCommunities *[][]int64,
+	communityDegreeSketches []uint32,
+	wholeWeight float64,
+) {
+	communityToNewIndex := make(map[int64]int64)
+	maxIndex := int64(0)
+	
+	for currentCommunity, neighbors := range communityEdgeTable {
+		bestNeighbor := int64(-1)
+		bestDegreeSketch := math.MaxFloat64
+		
+		// Find the neighbor with the lowest degree sketch
+		for neighborCommunity := range neighbors {
+			degreeSketch := float64(communityDegreeSketches[neighborCommunity])
+			if degreeSketch < bestDegreeSketch {
+				bestDegreeSketch = degreeSketch
+				bestNeighbor = neighborCommunity
+			}
+		}
+		
+		if bestNeighbor != -1 {
+			it1, exists1 := communityToNewIndex[currentCommunity]
+			it2, exists2 := communityToNewIndex[bestNeighbor]
+			
+			if exists1 && exists2 {
+				// Both communities already have an index, do nothing
+			} else if exists1 {
+				// Current community has an index, add bestNeighbor to the same index
+				(*newCommunities)[it1] = append((*newCommunities)[it1], bestNeighbor)
+				communityToNewIndex[bestNeighbor] = it1
+			} else if exists2 {
+				// Best neighbor has an index, add currentCommunity to the same index
+				(*newCommunities)[it2] = append((*newCommunities)[it2], currentCommunity)
+				communityToNewIndex[currentCommunity] = it2
+			} else {
+				// Neither has an index, create a new entry
+				*newCommunities = append(*newCommunities, []int64{currentCommunity, bestNeighbor})
+				communityToNewIndex[currentCommunity] = maxIndex
+				communityToNewIndex[bestNeighbor] = maxIndex
+				maxIndex++
+			}
+		}
+	}
+}
+
+func calculateBestMerge(
+	k, nk int64,
+	iter int,
+	threshold float64,
+	communityEdgeTable map[int64]map[int64]bool,
+	communitySketches map[int64][]uint32,
+	community []int64,
+	bestE []float64,
+	nodesInCommunities map[int64][]int64,
+	newCommunities *[][]int64,
+	communityDegreeSketches []uint32,
+	nodeHashValue []uint32,
+	wholeWeight float64,
+) {
+	communityToNewIndex := make(map[int64]int64)
+	maxIndex := int64(0)
+	
+	for currentCommunity, neighbors := range communityEdgeTable {
+		bestNeighbor := int64(-1)
+		bestEValue := 1.0
+		
+		for i := 1; i < iter; i++ {
+			bestEValue *= threshold
+		}
+		
+		c1Size := int64(len(nodesInCommunities[currentCommunity]))
+		
+		for neighborCommunity := range neighbors {
+			C2 := 1.0
+			intersectK := 1.0
+			
+			neighborSketch := make([]uint32, len(communitySketches[neighborCommunity]))
+			copy(neighborSketch, communitySketches[neighborCommunity])
+			
+			if int64(len(neighborSketch)) < k*nk {
+				C2 = float64(len(neighborSketch)) / float64(nk)
+			} else {
+				maxVbksC2 := neighborSketch[len(neighborSketch)-1]
+				C2 = float64(k-1) * float64(nk) * float64(math.MaxUint32) / float64(maxVbksC2)
+			}
+			
+			// Add current community's hash values
+			for _, node := range nodesInCommunities[currentCommunity] {
+				for j := int64(0); j < nk; j++ {
+					neighborSketch = append(neighborSketch, nodeHashValue[node*nk+j])
+				}
+			}
+			
+			sort.Slice(neighborSketch, func(i, j int) bool {
+				return neighborSketch[i] < neighborSketch[j]
+			})
+			
+			if int64(len(neighborSketch)) < nk*k {
+				count := int64(0)
+				for _, node := range nodesInCommunities[currentCommunity] {
+					for j := int64(0); j < nk; j++ {
+						// Binary search for nodeHashValue[node*nk+j] in neighborSketch
+						target := nodeHashValue[node*nk+j]
+						idx := sort.Search(len(neighborSketch), func(i int) bool {
+							return neighborSketch[i] >= target
+						})
+						for idx < len(neighborSketch) && neighborSketch[idx] == target {
+							count++
+							idx++
+						}
+					}
+				}
+				intersectK = float64(c1Size) + C2 - float64(count)/float64(nk)
+			} else {
+				if int64(len(neighborSketch)) > k*nk {
+					neighborSketch = neighborSketch[:k*nk]
+				}
+				intersectK = float64(k-1) * float64(nk) * float64(math.MaxUint32) / float64(neighborSketch[len(neighborSketch)-1])
+			}
+			
+			n1 := float64(communityDegreeSketches[currentCommunity])
+			n2 := float64(communityDegreeSketches[neighborCommunity])
+			eValue := calculateEFunction(c1Size, C2, intersectK, k, n1, n2, wholeWeight)
+			
+			if eValue > bestEValue {
+				bestEValue = eValue
+				bestNeighbor = neighborCommunity
+			}
+		}
+		
+		if bestNeighbor != -1 {
+			it1, exists1 := communityToNewIndex[currentCommunity]
+			it2, exists2 := communityToNewIndex[bestNeighbor]
+			
+			if exists1 && exists2 {
+				// Both communities already have an index, do nothing
+			} else if exists1 {
+				// Current community has an index, add bestNeighbor to the same index
+				(*newCommunities)[it1] = append((*newCommunities)[it1], bestNeighbor)
+				communityToNewIndex[bestNeighbor] = it1
+			} else if exists2 {
+				// Best neighbor has an index, add currentCommunity to the same index
+				(*newCommunities)[it2] = append((*newCommunities)[it2], currentCommunity)
+				communityToNewIndex[currentCommunity] = it2
+			} else {
+				// Neither has an index, create a new entry
+				*newCommunities = append(*newCommunities, []int64{currentCommunity, bestNeighbor})
+				communityToNewIndex[currentCommunity] = maxIndex
+				communityToNewIndex[bestNeighbor] = maxIndex
+				maxIndex++
+			}
+		}
+	}
+}
+
+func mergeCommunities(
+	k, nk int64,
+	community []int64,
+	communitySketches map[int64][]uint32,
+	mergedSketches map[int64][]uint32,
+	newCommunities [][]int64,
+	nodesInCommunities map[int64][]int64,
+) {
+	newCommunitySketches := make(map[int64][]uint32)
+	newNodesInCommunity := make(map[int64][]int64)
+	
+	newCommId := int64(0)
+	for ; newCommId < int64(len(newCommunities)); newCommId++ {
+		commsToMerge := newCommunities[newCommId]
+		if len(commsToMerge) == 0 {
 			continue
 		}
 		
-		supernodeID := fmt.Sprintf("c%d_l%d_%d", communityID, s.CurrentLevel, supernodeCounter)
-		supernodeCounter++
-		
-		// Create supernode (use first node's type as representative)
-		if len(nodes) > 0 {
-			firstNodeType := s.Graph.NodeTypes[nodes[0]]
-			supernode := HeteroNode{
-				ID:   supernodeID,
-				Type: firstNodeType,
-				Properties: map[string]interface{}{
-					"level":     s.CurrentLevel + 1,
-					"size":      len(nodes),
-					"community": communityID,
-				},
+		for _, oldComm := range commsToMerge {
+			for _, node := range nodesInCommunities[oldComm] {
+				community[node] = newCommId
+				newNodesInCommunity[newCommId] = append(newNodesInCommunity[newCommId], node)
 			}
-			newGraph.AddNode(supernode)
-		}
-		
-		communityToSupernode[communityID] = supernodeID
-		
-		// Map supernode to original nodes
-		originalNodes := make([]string, 0)
-		for _, nodeID := range nodes {
-			if originals, exists := s.NodeToOriginal[nodeID]; exists {
-				originalNodes = append(originalNodes, originals...)
-			} else {
-				originalNodes = append(originalNodes, nodeID)
-			}
-		}
-		newNodeToOriginal[supernodeID] = originalNodes
-	}
-	
-	// Create edges between supernodes based on inter-community sketch overlaps
-	interCommunityEdges := make(map[EdgeKey]float64)
-	
-	// Use sketch-based edge detection between communities
-	for comm1, sketch1 := range s.CommunitySketches {
-		for comm2, sketch2 := range s.CommunitySketches {
-			if comm1 >= comm2 { // Avoid duplicates and self-loops
-				continue
-			}
-			
-			supernode1 := communityToSupernode[comm1]
-			supernode2 := communityToSupernode[comm2]
-			
-			if supernode1 != "" && supernode2 != "" {
-				// Calculate inter-community connection strength using sketch intersection
-				connectionStrength := sketch1.EstimateIntersectionWith(sketch2)
-				
-				// Only create edge if connection strength is significant
-				if connectionStrength > 0.1 { // Threshold for significant connection
-					edgeKey := EdgeKey{From: supernode1, To: supernode2}
-					interCommunityEdges[edgeKey] = connectionStrength
-				}
-			}
+			newCommunitySketches[newCommId] = append(newCommunitySketches[newCommId], communitySketches[oldComm]...)
+			delete(nodesInCommunities, oldComm)
 		}
 	}
 	
-	// Add inter-community edges to new graph
-	for edgeKey, weight := range interCommunityEdges {
-		edge := HeteroEdge{
-			From:   edgeKey.From,
-			To:     edgeKey.To,
-			Type:   "aggregated",
-			Weight: weight,
+	// Process communities that were not merged
+	for comm, nodes := range nodesInCommunities {
+		newCommunitySketches[newCommId] = communitySketches[comm]
+		for _, node := range nodes {
+			community[node] = newCommId
+			newNodesInCommunity[newCommId] = append(newNodesInCommunity[newCommId], node)
 		}
-		newGraph.AddEdge(edge)
+		newCommId++
 	}
 	
-	// Update state
-	s.Graph = newGraph
-	s.NodeToOriginal = newNodeToOriginal
-	
-	return nil
-}
-
-// buildFinalCommunities maps original nodes to final communities
-func (s *ScarState) buildFinalCommunities() map[string]int {
-	finalCommunities := make(map[string]int)
-	
-	// Map through all levels
-	for communityID, nodes := range s.C2N {
-		for _, nodeID := range nodes {
-			if originals, exists := s.NodeToOriginal[nodeID]; exists {
-				for _, originalNode := range originals {
-					finalCommunities[originalNode] = communityID
-				}
-			}
+	// Move the new nodes into the original nodesInCommunities
+	for k, v := range newNodesInCommunity {
+		nodesInCommunities[k] = v
+	}
+	for k := range nodesInCommunities {
+		if _, exists := newNodesInCommunity[k]; !exists {
+			delete(nodesInCommunities, k)
 		}
 	}
 	
-	return finalCommunities
-}
-
-// buildHierarchyAndMapping builds hierarchy and mapping structures for output
-func (s *ScarState) buildHierarchyAndMapping(result *ScarResult) {
-	result.HierarchyLevels = make([]map[string][]string, len(result.Levels))
-	result.MappingLevels = make([]map[string][]string, len(result.Levels))
-	
-	for i, level := range result.Levels {
-		hierarchy := make(map[string][]string)
-		mapping := make(map[string][]string)
-		
-		for communityID, nodes := range level.C2N {
-			supernodeID := fmt.Sprintf("c%d_l%d_%d", communityID, level.Level, communityID)
-			
-			// Hierarchy: supernode -> direct children
-			hierarchy[supernodeID] = make([]string, len(nodes))
-			copy(hierarchy[supernodeID], nodes)
-			
-			// Mapping: supernode -> all original leaf nodes
-			originalNodes := make([]string, 0)
-			for _, nodeID := range nodes {
-				if originals, exists := level.NodeMapping[nodeID]; exists {
-					originalNodes = append(originalNodes, originals...)
-				} else {
-					originalNodes = append(originalNodes, nodeID)
-				}
-			}
-			mapping[supernodeID] = originalNodes
+	// Sort and resize sketches
+	for comm, sketches := range newCommunitySketches {
+		sort.Slice(sketches, func(i, j int) bool {
+			return sketches[i] < sketches[j]
+		})
+		if int64(len(sketches)) > k*nk {
+			sketches = sketches[:k*nk]
 		}
-		
-		result.HierarchyLevels[i] = hierarchy
-		result.MappingLevels[i] = mapping
+		mergedSketches[comm] = sketches
 	}
-}
-
-// Enhanced validation functions
-
-// ValidateState validates the internal state of SCAR algorithm
-func (s *ScarState) ValidateState() error {
-	// Validate sketches
-	for nodeID, sketch := range s.Sketches {
-		if sketch == nil {
-			return fmt.Errorf("nil sketch for node %s", nodeID)
-		}
-		
-		if err := sketch.ValidateSketch(); err != nil {
-			return fmt.Errorf("invalid sketch for node %s: %v", nodeID, err)
-		}
-	}
-	
-	// Validate community sketches
-	for commID, sketch := range s.CommunitySketches {
-		if sketch == nil {
-			return fmt.Errorf("nil community sketch for community %d", commID)
-		}
-		
-		if err := sketch.ValidateSketch(); err != nil {
-			return fmt.Errorf("invalid community sketch for community %d: %v", commID, err)
-		}
-	}
-	
-	// Validate node-to-community mapping
-	for nodeID, commID := range s.N2C {
-		if _, exists := s.C2N[commID]; !exists {
-			return fmt.Errorf("node %s assigned to non-existent community %d", nodeID, commID)
-		}
-		
-		// Check if node is in the community's node list
-		found := false
-		for _, node := range s.C2N[commID] {
-			if node == nodeID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("node %s not found in community %d node list", nodeID, commID)
-		}
-	}
-	
-	// Validate community-to-nodes mapping
-	for commID, nodes := range s.C2N {
-		for _, nodeID := range nodes {
-			if assignedComm, exists := s.N2C[nodeID]; !exists {
-				return fmt.Errorf("node %s in community %d but not in N2C mapping", nodeID, commID)
-			} else if assignedComm != commID {
-				return fmt.Errorf("node %s in community %d but assigned to community %d", nodeID, commID, assignedComm)
-			}
-		}
-	}
-	
-	return nil
-}
-
-// Debug functions for development and testing
-
-// PrintSketchStatistics prints detailed statistics about sketches
-func (s *ScarState) PrintSketchStatistics() {
-	fmt.Println("=== Sketch Statistics ===")
-	
-	totalSize := 0
-	saturatedCount := 0
-	undersaturatedCount := 0
-	
-	for nodeID, sketch := range s.Sketches {
-		stats := sketch.GetStatistics()
-		totalSize += stats["total_size"].(int)
-		
-		if stats["is_majority_saturated"].(bool) {
-			saturatedCount++
-		} else {
-			undersaturatedCount++
-		}
-		
-		if s.Config.Verbose {
-			fmt.Printf("Node %s: size=%d, degree=%.2f, saturated=%v\n", 
-				nodeID, stats["total_size"].(int), stats["estimated_degree"].(float64), 
-				stats["is_majority_saturated"].(bool))
-		}
-	}
-	
-	fmt.Printf("Total sketches: %d\n", len(s.Sketches))
-	fmt.Printf("Average sketch size: %.2f\n", float64(totalSize)/float64(len(s.Sketches)))
-	fmt.Printf("Saturated sketches: %d (%.1f%%)\n", saturatedCount, 
-		100.0*float64(saturatedCount)/float64(len(s.Sketches)))
-	fmt.Printf("Undersaturated sketches: %d (%.1f%%)\n", undersaturatedCount,
-		100.0*float64(undersaturatedCount)/float64(len(s.Sketches)))
-}
-
-// PrintCommunityStatistics prints detailed statistics about communities
-func (s *ScarState) PrintCommunityStatistics() {
-	fmt.Println("=== Community Statistics ===")
-	
-	totalNodes := 0
-	
-	for commID, nodes := range s.C2N {
-		totalNodes += len(nodes)
-		degree := s.CommunityDegrees[commID]
-		
-		fmt.Printf("Community %d: %d nodes, degree=%.2f, saturated=%v\n", 
-			commID, len(nodes), degree.Value, degree.IsSaturated)
-		
-		if s.Config.Verbose {
-			fmt.Printf("  Nodes: %v\n", nodes)
-		}
-	}
-	
-	fmt.Printf("Total communities: %d\n", len(s.C2N))
-	fmt.Printf("Average community size: %.2f\n", float64(totalNodes)/float64(len(s.C2N)))
-}
-
-// Performance monitoring functions
-
-// GetPerformanceMetrics returns detailed performance metrics
-func (s *ScarState) GetPerformanceMetrics() map[string]interface{} {
-	metrics := make(map[string]interface{})
-	
-	// Sketch metrics
-	totalSketchSize := 0
-	saturatedSketches := 0
-	
-	for _, sketch := range s.Sketches {
-		totalSketchSize += sketch.Size()
-		degree := sketch.EstimateDegree()
-		if degree.IsSaturated {
-			saturatedSketches++
-		}
-	}
-	
-	metrics["total_sketch_size"] = totalSketchSize
-	metrics["average_sketch_size"] = float64(totalSketchSize) / float64(len(s.Sketches))
-	metrics["saturation_ratio"] = float64(saturatedSketches) / float64(len(s.Sketches))
-	
-	// Community metrics
-	totalCommunitySize := 0
-	for _, nodes := range s.C2N {
-		totalCommunitySize += len(nodes)
-	}
-	
-	metrics["num_communities"] = len(s.C2N)
-	metrics["average_community_size"] = float64(totalCommunitySize) / float64(len(s.C2N))
-	
-	// Hash-to-node mapping metrics
-	metrics["hash_mapping_size"] = len(s.HashToNodeMap.Mapping)
-	
-	// Graph metrics
-	metrics["num_nodes"] = len(s.Graph.NodeList)
-	metrics["num_edges"] = len(s.Graph.Edges)
-	
-	return metrics
-}
-
-// Utility functions for testing and debugging
-
-// CompareWithGroundTruth compares results with known ground truth (for testing)
-func CompareWithGroundTruth(result *ScarResult, groundTruth map[string]int) map[string]float64 {
-	comparison := make(map[string]float64)
-	
-	if len(result.FinalCommunities) == 0 || len(groundTruth) == 0 {
-		return comparison
-	}
-	
-	// Calculate various similarity metrics
-	correctAssignments := 0
-	totalAssignments := 0
-	
-	for nodeID, predictedComm := range result.FinalCommunities {
-		if trueComm, exists := groundTruth[nodeID]; exists {
-			totalAssignments++
-			if predictedComm == trueComm {
-				correctAssignments++
-			}
-		}
-	}
-	
-	if totalAssignments > 0 {
-		comparison["accuracy"] = float64(correctAssignments) / float64(totalAssignments)
-	}
-	
-	comparison["predicted_communities"] = float64(len(getUniqueCommunities(result.FinalCommunities)))
-	comparison["true_communities"] = float64(len(getUniqueCommunities(groundTruth)))
-	
-	return comparison
-}
-
-// Helper function to get unique communities
-func getUniqueCommunities(communities map[string]int) map[int]bool {
-	unique := make(map[int]bool)
-	for _, comm := range communities {
-		unique[comm] = true
-	}
-	return unique
-}
-
-// Memory management functions
-
-// CleanupState cleans up large data structures to free memory
-func (s *ScarState) CleanupState() {
-	// Clear large maps while preserving essential data
-	s.Sketches = nil
-	s.CommunitySketches = nil
-	s.HashToNodeMap = nil
-	s.CommunityDegrees = nil
-	s.NodeDegrees = nil
-}
-
-// EstimateMemoryUsage estimates the memory usage of the algorithm state
-func (s *ScarState) EstimateMemoryUsage() map[string]int64 {
-	usage := make(map[string]int64)
-	
-	// Estimate sketch memory usage
-	sketchMemory := int64(0)
-	for _, sketch := range s.Sketches {
-		// Each uint64 is 8 bytes, plus overhead for slice structures
-		sketchMemory += int64(sketch.Size() * 8)
-		sketchMemory += int64(sketch.NK * 24) // Slice overhead
-	}
-	usage["sketches"] = sketchMemory
-	
-	// Estimate community sketch memory
-	communitySketchMemory := int64(0)
-	for _, sketch := range s.CommunitySketches {
-		communitySketchMemory += int64(sketch.Size() * 8)
-		communitySketchMemory += int64(sketch.NK * 24)
-	}
-	usage["community_sketches"] = communitySketchMemory
-	
-	// Estimate hash-to-node mapping memory
-	hashMapMemory := int64(len(s.HashToNodeMap.Mapping) * (8 + 16)) // uint64 + string overhead
-	usage["hash_mapping"] = hashMapMemory
-	
-	// Estimate other structures
-	usage["node_community_mapping"] = int64(len(s.N2C) * 24) // string + int + overhead
-	usage["community_nodes_mapping"] = int64(len(s.C2N) * 100) // Estimated slice overhead
-	
-	total := int64(0)
-	for _, mem := range usage {
-		total += mem
-	}
-	usage["total"] = total
-	
-	return usage
 }

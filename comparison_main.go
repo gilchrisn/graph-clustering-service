@@ -209,7 +209,7 @@ func runScarApproach(graph *models.HeterogeneousGraph, metaPath *models.MetaPath
 	config.MaxIterations = 50
 
 	config.Parallel.Enabled = true // Enable parallel processing
-	config.Parallel.NumWorkers = 4 // Set number of workers for parallel processing
+	config.Parallel.NumWorkers = 1 // Set number of workers for parallel processing
 	config.Parallel.BatchSize = 100 // Set max queue size for parallel tasks
 
 	// Progress callback

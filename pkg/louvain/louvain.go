@@ -16,10 +16,11 @@ func RunLouvain(graph *NormalizedGraph, config LouvainConfig) (*LouvainResult, e
 		return nil, fmt.Errorf("invalid graph: %w", err)
 	}
 	
-	// Initialize random seed
-	if config.RandomSeed < 0 {
-		config.RandomSeed = time.Now().UnixNano()
-	}
+	// // Initialize random seed
+	// if config.RandomSeed < 0 {
+	// 	config.RandomSeed = time.Now().UnixNano()
+	// }
+	config.RandomSeed = 42 // For reproducibility in tests
 	rand.Seed(config.RandomSeed)
 	
 	// Initialize result
@@ -30,6 +31,7 @@ func RunLouvain(graph *NormalizedGraph, config LouvainConfig) (*LouvainResult, e
 	
 	// Initialize state
 	state := NewLouvainState(graph, config)
+
 	
 	level := 0
 	improvement := true
@@ -147,7 +149,9 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 
 	fmt.Printf("Starting Louvain level with %d nodes, initial modularity: %.4f\n",
 		s.Graph.NumNodes, s.GetModularity())
-	
+
+	// ==============================================================================================
+
 	for {
 		s.Iteration++
 		iterMoves := 0
@@ -157,9 +161,10 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 		for i := 0; i < s.Graph.NumNodes; i++ {
 			nodeOrder[i] = i
 		}
-		rand.Shuffle(len(nodeOrder), func(i, j int) {
-			nodeOrder[i], nodeOrder[j] = nodeOrder[j], nodeOrder[i]
-		})
+		// Shuffle nodes to randomize processing order (Disabled for reproducibility)
+		// rand.Shuffle(len(nodeOrder), func(i, j int) {
+		// 	nodeOrder[i], nodeOrder[j] = nodeOrder[j], nodeOrder[i]
+		// })
 		
 		// Process nodes in chunks
 		chunkSize := s.Config.ChunkSize
@@ -209,6 +214,12 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 	}
 
 	for _, node := range nodes {
+
+		fmt.Printf("\n\n\nInitial state of community before processing node %d: %v\n",
+			node, s.C2N)
+		fmt.Printf("Initial community assignment %d\n\n\n",
+			s.N2C)
+		fmt.Printf("Processing node %d in community %d\n", node, s.N2C[node])
 		oldComm := s.N2C[node]
 		
 		// Get neighbor communities
@@ -232,6 +243,9 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 			}
 
 			gain := s.modularityGain(node, nc.Community, nc.Weight)
+			fmt.Printf("If node %d moves to community %d, gain: %.4f\n",
+				node, nc.Community, gain)
+
 			if gain > bestGain {
 				bestComm = nc.Community
 				bestGain = gain
@@ -243,6 +257,14 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 			s.insertNodeIntoCommunity(node, bestComm)
 			moves++
 		}
+
+		fmt.Printf("Node %d moved from community %d to %d (gain: %.4f)\n",
+			node, oldComm, bestComm, bestGain)
+		actualModularity := s.GetModularity()
+		fmt.Printf("Current modularity after move: %.4f\n", actualModularity)
+		// Print community assignment after move for all communities
+		fmt.Printf("Current community assignments: %v\n", s.N2C)
+		fmt.Printf("Current community sizes: %v\n", s.C2N)
 
 		// Validate state after each move
 		if err := s.ValidateState(); err != nil {
@@ -371,6 +393,7 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 	if currentComm == targetComm {
 		return 0.0
 	}
+	// k_i_in 
 
 	oldModularity := s.GetModularity()
 
