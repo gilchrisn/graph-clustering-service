@@ -2,26 +2,13 @@ package scar
 
 import (
 	"bufio"
-	"fmt"
-	"log"
-	"math"
-	"math/rand"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
-// Types and constants
-type UintE = uint32
-type UintT = uint32
-
-const (
-	UINT_E_MAX = math.MaxUint32
-)
-
-// Graph structures
+// SymmetricVertex represents a vertex in an undirected graph
 type SymmetricVertex struct {
 	neighbors []int64
 	degree    int64
@@ -35,243 +22,40 @@ func (v *SymmetricVertex) GetNeighbors() []int64 {
 	return v.neighbors
 }
 
+// GraphStructure represents the main graph data structure
 type GraphStructure struct {
 	V []SymmetricVertex
-	n int64
-	m int64
+	n int64 // number of vertices
+	m int64 // number of edges
 }
 
-// Vertex subset structures
-type VertexSubset struct {
-	n       int64
-	d       []bool
-	s       []int64
-	isDense bool
-	size    int64
+func (g *GraphStructure) NumVertices() int64 {
+	return g.n
 }
 
-func NewVertexSubset(n int64) *VertexSubset {
-	return &VertexSubset{
-		n:       n,
-		d:       make([]bool, n),
-		isDense: true,
-		size:    0,
-	}
+func (g *GraphStructure) NumEdges() int64 {
+	return g.m
 }
 
-func NewVertexSubsetFromArray(n int64, frontier []bool) *VertexSubset {
-	vs := &VertexSubset{
-		n:       n,
-		d:       make([]bool, n),
-		isDense: true,
-		size:    0,
-	}
-	copy(vs.d, frontier)
-	for i := int64(0); i < n; i++ {
-		if frontier[i] {
-			vs.size++
-		}
-	}
-	return vs
+// GraphReader handles reading graph data from files
+type GraphReader struct{}
+
+func NewGraphReader() *GraphReader {
+	return &GraphReader{}
 }
 
-func (vs *VertexSubset) IsIn(v int64) bool {
-	if vs.isDense {
-		return vs.d[v]
-	}
-	// Binary search in sparse array
-	left, right := 0, len(vs.s)-1
-	for left <= right {
-		mid := (left + right) / 2
-		if vs.s[mid] == v {
-			return true
-		} else if vs.s[mid] < v {
-			left = mid + 1
-		} else {
-			right = mid - 1
-		}
-	}
-	return false
-}
-
-func (vs *VertexSubset) Size() int64 {
-	return vs.size
-}
-
-func (vs *VertexSubset) NumRows() int64 {
-	return vs.n
-}
-
-func (vs *VertexSubset) NumNonzeros() int64 {
-	return vs.size
-}
-
-func (vs *VertexSubset) ToSparse() {
-	if !vs.isDense {
-		return
-	}
-	vs.s = vs.s[:0]
-	for i := int64(0); i < vs.n; i++ {
-		if vs.d[i] {
-			vs.s = append(vs.s, i)
-		}
-	}
-	vs.isDense = false
-}
-
-func (vs *VertexSubset) ToDense() {
-	if vs.isDense {
-		return
-	}
-	for i := int64(0); i < vs.n; i++ {
-		vs.d[i] = false
-	}
-	for _, v := range vs.s {
-		vs.d[v] = true
-	}
-	vs.isDense = true
-}
-
-func (vs *VertexSubset) Vtx(i int) int64 {
-	if vs.isDense {
-		count := 0
-		for j := int64(0); j < vs.n; j++ {
-			if vs.d[j] {
-				if count == i {
-					return j
-				}
-				count++
-			}
-		}
-	}
-	return vs.s[i]
-}
-
-func (vs *VertexSubset) Del() {
-	vs.d = nil
-	vs.s = nil
-}
-
-// Sketch computation structures
-type SketchF struct {
-	sketches         []UintE
-	vertexProperties []UintE
-	k                int64
-	nk               int64
-	n                int64
-	iter             UintE
-	path             []UintE
-}
-
-func NewSketchF(sketches []UintE, vertexProperties []UintE, k, nk, n int64, iter UintE, path []UintE) *SketchF {
-	return &SketchF{
-		sketches:         sketches,
-		vertexProperties: vertexProperties,
-		k:                k,
-		nk:               nk,
-		n:                n,
-		iter:             iter,
-		path:             path,
-	}
-}
-
-func (sf *SketchF) Update(s, d int64) bool {
-	if sf.vertexProperties[d] != sf.path[sf.iter] {
-		return false
-	}
-
-	for l := int64(0); l < sf.nk; l++ {
-		sValuesStart := l*sf.n*sf.k + s*sf.k + int64(sf.iter-1)*sf.n*sf.k*sf.nk
-		dValuesStart := l*sf.n*sf.k + d*sf.k + int64(sf.iter)*sf.n*sf.k*sf.nk
-		
-		temp := make([]UintE, sf.k)
-		i, t, j := int64(0), int64(0), int64(0)
-
-		// Merge sValues and dValues into temp array
-		for t < sf.k {
-			sVal := UintE(math.MaxUint32)
-			dVal := UintE(math.MaxUint32)
-			
-			if i < sf.k {
-				sVal = sf.sketches[sValuesStart+i]
-			}
-			if j < sf.k {
-				dVal = sf.sketches[dValuesStart+j]
-			}
-			
-			if sVal == dVal && sVal != math.MaxUint32 {
-				temp[t] = sVal
-				t++
-				i++
-				j++
-			} else if i < sf.k && (j >= sf.k || sVal < dVal) {
-				temp[t] = sVal
-				t++
-				i++
-			} else if j < sf.k {
-				temp[t] = dVal
-				t++
-				j++
-			} else {
-				break
-			}
-		}
-
-		// Copy the smallest k values back to dValues
-		for idx := int64(0); idx < sf.k && idx < t; idx++ {
-			sf.sketches[dValuesStart+idx] = temp[idx]
-		}
-	}
-
-	return true
-}
-
-func (sf *SketchF) Cond(d int64) bool {
-	return sf.vertexProperties[d] == sf.path[sf.iter]
-}
-
-// Edge mapping functions
-func EdgeMap(G *GraphStructure, vs *VertexSubset, f *SketchF) *VertexSubset {
-	numVertices := G.n
-	m := vs.NumNonzeros()
-	
-	if m == 0 {
-		return NewVertexSubset(numVertices)
-	}
-	
-	vs.ToSparse()
-	newFrontier := make([]bool, numVertices)
-	
-	// Process each vertex in the frontier
-	for i := 0; i < int(m); i++ {
-		v := vs.Vtx(i)
-		
-		// Process all neighbors of v
-		for _, neighbor := range G.V[v].neighbors {
-			if f.Cond(neighbor) {
-				if f.Update(v, neighbor) {
-					newFrontier[neighbor] = true
-				}
-			}
-		}
-	}
-	
-	return NewVertexSubsetFromArray(numVertices, newFrontier)
-}
-
-// Graph reading functions
-func ReadGraphFromFile(filename string) *GraphStructure {
+func (gr *GraphReader) ReadFromFile(filename string) (*GraphStructure, error) {
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
 	edges := make(map[int64][]int64)
 	maxNode := int64(0)
 	edgeCount := int64(0)
 
+	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -296,150 +80,60 @@ func ReadGraphFromFile(filename string) *GraphStructure {
 		}
 	}
 
-	// Create vertex array
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	vertices := gr.buildVertices(edges, maxNode)
+	
+	return &GraphStructure{
+		V: vertices,
+		n: maxNode + 1,
+		m: edgeCount,
+	}, nil
+}
+
+func (gr *GraphReader) buildVertices(edges map[int64][]int64, maxNode int64) []SymmetricVertex {
 	vertices := make([]SymmetricVertex, maxNode+1)
+	
 	for i := int64(0); i <= maxNode; i++ {
 		neighbors := edges[i]
-		// Remove duplicates and sort
 		if len(neighbors) > 0 {
-			sort.Slice(neighbors, func(i, j int) bool {
-				return neighbors[i] < neighbors[j]
-			})
-			// Remove duplicates
-			unique := neighbors[:1]
-			for j := 1; j < len(neighbors); j++ {
-				if neighbors[j] != neighbors[j-1] {
-					unique = append(unique, neighbors[j])
-				}
-			}
-			neighbors = unique
+			neighbors = gr.removeDuplicatesAndSort(neighbors)
 		}
 		vertices[i] = SymmetricVertex{
 			neighbors: neighbors,
 			degree:    int64(len(neighbors)),
 		}
 	}
-
-	return &GraphStructure{
-		V: vertices,
-		n: maxNode + 1,
-		m: edgeCount,
-	}
+	
+	return vertices
 }
 
-// Property and path file reading
-func ReadProperties(filename string, n int64) []UintE {
-	properties := make([]UintE, n)
+func (gr *GraphReader) removeDuplicatesAndSort(neighbors []int64) []int64 {
+	sort.Slice(neighbors, func(i, j int) bool {
+		return neighbors[i] < neighbors[j]
+	})
 	
-	if filename == "" {
-		return properties
+	if len(neighbors) == 0 {
+		return neighbors
 	}
 	
-	file, err := os.Open(filename)
+	unique := neighbors[:1]
+	for j := 1; j < len(neighbors); j++ {
+		if neighbors[j] != neighbors[j-1] {
+			unique = append(unique, neighbors[j])
+		}
+	}
+	return unique
+}
+
+// Legacy function for backward compatibility
+func ReadGraphFromFile(filename string) *GraphStructure {
+	reader := NewGraphReader()
+	graph, err := reader.ReadFromFile(filename)
 	if err != nil {
-		fmt.Printf("Warning: Could not open property file %s: %v\n", filename, err)
-		return properties
+		panic(err) // Maintain original behavior
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		
-		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			nodeId, err1 := strconv.ParseInt(parts[0], 10, 64)
-			property, err2 := strconv.ParseInt(parts[1], 10, 32)
-			if err1 == nil && err2 == nil && nodeId < n {
-				properties[nodeId] = UintE(property)
-			}
-		}
-	}
-	
-	return properties
-}
-
-func ReadPath(filename string) ([]UintE, int64) {
-	path := make([]UintE, 20)
-	pathLength := int64(0)
-	
-	if filename == "" {
-		path[0] = 0
-		return path, 1
-	}
-	
-	file, err := os.Open(filename)
-	if err != nil {
-		fmt.Printf("Warning: Could not open path file %s: %v\n", filename, err)
-		path[0] = 0
-		return path, 1
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		
-		if label, err := strconv.ParseInt(line, 10, 32); err == nil {
-			if pathLength < 20 {
-				path[pathLength] = UintE(label)
-				pathLength++
-			}
-		}
-	}
-	
-	if pathLength == 0 {
-		path[0] = 0
-		pathLength = 1
-	}
-	
-	return path, pathLength
-}
-
-// Utility functions for sketch computation
-func ComputeSketchForGraph(G *GraphStructure, sketches []UintE, path []UintE, pathLength int64, vertexProperties []UintE, nodeHashValue []UintE, k, nk int64) {
-	n := G.n
-
-	// Find all nodes whose label matches the first label in the path
-	firstLabel := path[0]
-	frontier := make([]bool, n)
-	
-	// Use a proper random number generator
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	for i := int64(0); i < n; i++ {
-		frontier[i] = false
-		if vertexProperties[i] == firstLabel {
-			for j := int64(0); j < nk; j++ {
-				uniformValue := rng.Uint32()
-				if uniformValue == math.MaxUint32 {
-					uniformValue--
-				}
-				sketches[j*n*k+i*k] = uniformValue
-				nodeHashValue[i*nk+j] = uniformValue + 1
-				frontier[i] = true
-			}
-		}
-	}
-
-	frontierVS := NewVertexSubsetFromArray(n, frontier)
-	fmt.Printf("Initial frontier size: %d\n", frontierVS.Size())
-
-	// Start iterations from iter=1 to pathLength-1
-	for iter := UintE(1); iter < UintE(pathLength); iter++ {
-		fmt.Printf("Current iter: %d\n", iter)
-		f := NewSketchF(sketches, vertexProperties, k, nk, n, iter, path)
-		output := EdgeMap(G, frontierVS, f)
-		frontierVS.Del()
-		frontierVS = output
-		fmt.Printf("Frontier size: %d\n", frontierVS.Size())
-	}
-
-	frontierVS.Del()
+	return graph
 }
