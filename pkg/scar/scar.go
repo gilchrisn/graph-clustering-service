@@ -232,8 +232,20 @@ func RunSCAR(args []string) {
 	}
 	
 	config := parseArguments(args)
-	scar := NewSCAR()
 	
+	// Check if user wants Louvain version
+	if config.UseLouvain {
+		fmt.Println("Running Louvain-SCAR version...")
+		louvain := NewLouvainSCAR()
+		if err := louvain.RunWithConfig(config); err != nil {
+			fmt.Printf("Error running Louvain-SCAR: %v\n", err)
+		}
+		return
+	}
+	
+	// Original SCAR algorithm
+	fmt.Println("Running original SCAR version...")
+	scar := NewSCAR()
 	if err := scar.RunWithConfig(config); err != nil {
 		fmt.Printf("Error running SCAR: %v\n", err)
 	}
@@ -255,6 +267,7 @@ func parseArguments(args []string) SCARConfig {
 		K:            10,
 		NK:           4,
 		Threshold:    0.5,
+		UseLouvain:   false,
 	}
 	
 	// Parse additional arguments
@@ -280,6 +293,8 @@ func parseArguments(args []string) SCARConfig {
 			if val, err := strconv.ParseFloat(strings.TrimPrefix(arg, "-th="), 64); err == nil {
 				config.Threshold = val
 			}
+		} else if arg == "-louvain" {
+			config.UseLouvain = true
 		}
 	}
 	

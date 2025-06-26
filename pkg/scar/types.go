@@ -17,4 +17,5 @@ type SCARConfig struct {
 	K            int64
 	NK           int64
 	Threshold    float64
+	UseLouvain   bool  // New flag to use Louvain structure
 }
