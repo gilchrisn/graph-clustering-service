@@ -7,6 +7,7 @@ import (
 func (pt *MultiLevelPartitionTracker) recordAggregation(
     oldCommunity []int64,
     commToNewNode map[int64]int64,
+	currentSketches map[int64]*VertexBottomKSketch,
 ) {
     fmt.Printf("\n=== RECORDING LEVEL %d AGGREGATION ===\n", pt.currentLevel)
     
@@ -15,7 +16,13 @@ func (pt *MultiLevelPartitionTracker) recordAggregation(
         superNodeToOriginalNodes: make(map[int64][]int64),
         numNodes:                int64(len(commToNewNode)),
     }
-    
+
+    // Save sketches from current level before aggregation
+    newMapping.levelSketches = make(map[int64]*VertexBottomKSketch)
+    for nodeId, sketch := range currentSketches {
+        newMapping.levelSketches[nodeId] = sketch
+    }
+
     if pt.currentLevel == 0 {
         // First aggregation: original nodes -> super-nodes
         fmt.Println("First level: mapping original nodes to super-nodes")
@@ -68,6 +75,8 @@ func (pt *MultiLevelPartitionTracker) recordAggregation(
             }
         }
     }
+
+	
     
     // Save this level's mapping
     pt.levelMappings = append(pt.levelMappings, newMapping)

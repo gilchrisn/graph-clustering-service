@@ -14,10 +14,12 @@ type SCARConfig struct {
 	PathFile     string
 	OutputFile   string
 	EdgesFile    string
+	Prefix       string // For output files
 	K            int64
 	NK           int64
 	Threshold    float64
 	UseLouvain   bool
+	SketchOutput bool // Whether to output sketches
 }
 
 type MultiLevelPartitionTracker struct {
@@ -40,6 +42,8 @@ type LevelMapping struct {
     
     // Number of nodes at this level
     numNodes int64
+
+	levelSketches map[int64]*VertexBottomKSketch // sketches for this level
 }
 
 

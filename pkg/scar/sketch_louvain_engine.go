@@ -157,24 +157,32 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 
 	// Write results - trace back to original nodes if we did aggregation
 	var finalPartition []int64
-	var outputSize int64
+	// var outputSize int64
 
 	if sle.partitionTracker.currentLevel > 0 {  
 		// We did aggregation, need to trace back to original nodes
 		fmt.Println("Tracing back partition to original nodes...")
 		finalPartition = sle.partitionTracker.getFinalPartition(community)
-		outputSize = sle.originalGraphSize
+		// outputSize = sle.originalGraphSize
 	} else {
 		// No aggregation happened, community array is already for original nodes
 		fmt.Println("No aggregation occurred, using direct community mapping...")
 		finalPartition = community
-		outputSize = n
+		// outputSize = n
 	}
 
+	// Write results using new output writer
 	outputWriter := NewOutputWriter()
-	err = outputWriter.WriteResults(sle.config.OutputFile, finalPartition, outputSize)
-
 	
+	// Call the new method that handles both modes
+	err = outputWriter.WriteLouvainResults(
+		sle.config,
+		finalPartition,
+		sle.partitionTracker,
+		sle.graph,
+		sle.sketchManager,
+	)
+
 	if err != nil {
 		return fmt.Errorf("failed to write output: %v", err)
 	}
@@ -662,7 +670,7 @@ func (sle *SketchLouvainEngine) aggregateCommunities(
 	}
 	
 	// Step 9: Record aggregation in partition tracker
-	sle.partitionTracker.recordAggregation(community, commToNewNode)
+	sle.partitionTracker.recordAggregation(community, commToNewNode, sle.sketchManager.vertexSketches)
 	
 	// Step 10: Update the main sketch manager
 	sle.sketchManager = newSketchManager
