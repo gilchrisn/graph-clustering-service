@@ -134,10 +134,60 @@ func NewLouvainState(graph *NormalizedGraph, config LouvainConfig) *LouvainState
 	return state
 }
 
-// NewLouvainStateFromCommunities creates a state where nodes are communities from previous level
-func NewLouvainStateFromCommunities(graph *NormalizedGraph, config LouvainConfig, communityMap map[int][]int) *LouvainState {
-	state := NewLouvainState(graph, config)
-	state.CommunityCounter = len(communityMap)
+
+// This creates a fresh LouvainState for the super-graph where each super-node
+// starts in its own community (ready for the next level of optimization)
+
+func NewLouvainStateFromCommunities(superGraph *NormalizedGraph, config LouvainConfig, communityMap map[int][]int) *LouvainState {
+	fmt.Printf("Initializing new Louvain state for super-graph with %d super-nodes\n", superGraph.NumNodes)
+	
+	// Create the basic state structure
+	state := &LouvainState{
+		Graph:            superGraph,
+		Config:           config,
+		N2C:              make([]int, superGraph.NumNodes),      // super-node -> community mapping
+		C2N:              make(map[int][]int),                   // community -> super-nodes mapping
+		In:               make(map[int]float64),                 // internal weights of communities
+		Tot:              make(map[int]float64),                 // total weights of communities
+		CommunityCounter: 0,
+		Iteration:        0,
+	}
+	
+	// =============================================================================
+	// INITIALIZE EACH SUPER-NODE IN ITS OWN COMMUNITY
+	// =============================================================================
+	// At the start of each level, every super-node is in its own community
+	// This is the same as the original initialization, but for super-nodes
+	
+	for superNodeIdx := 0; superNodeIdx < superGraph.NumNodes; superNodeIdx++ {
+		// Each super-node gets its own unique community ID
+		communityID := state.CommunityCounter
+		state.CommunityCounter++
+		
+		// Set up the mappings
+		state.N2C[superNodeIdx] = communityID                    // super-node -> community
+		state.C2N[communityID] = []int{superNodeIdx}             // community -> [super-node]
+		
+		// =============================================================================
+		// INITIALIZE COMMUNITY WEIGHTS (In and Tot)
+		// =============================================================================
+		
+		// Calculate self-loop weight (edges within this super-node's original community)
+		selfLoopWeight := superGraph.GetEdgeWeight(superNodeIdx, superNodeIdx)
+		
+		// Calculate total degree (sum of all edges from this super-node)
+		totalDegree := superGraph.GetNodeDegree(superNodeIdx)
+		
+		// Set community statistics
+		state.In[communityID] = selfLoopWeight    // Internal weight = self-loops
+		state.Tot[communityID] = totalDegree      // Total weight = total degree
+		
+		fmt.Printf("Super-node %d: community %d, self-loop: %.2f, degree: %.2f\n", 
+			superNodeIdx, communityID, selfLoopWeight, totalDegree)
+	}
+	
+	fmt.Printf("Initialization complete: %d communities (one per super-node)\n", state.CommunityCounter)
+	
 	return state
 }
 
@@ -214,12 +264,6 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 	}
 
 	for _, node := range nodes {
-
-		fmt.Printf("\n\n\nInitial state of community before processing node %d: %v\n",
-			node, s.C2N)
-		fmt.Printf("Initial community assignment %d\n\n\n",
-			s.N2C)
-		fmt.Printf("Processing node %d in community %d\n", node, s.N2C[node])
 		oldComm := s.N2C[node]
 		
 		// Get neighbor communities
@@ -243,8 +287,6 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 			}
 
 			gain := s.modularityGain(node, nc.Community, nc.Weight)
-			fmt.Printf("If node %d moves to community %d, gain: %.4f\n",
-				node, nc.Community, gain)
 
 			if gain > bestGain {
 				bestComm = nc.Community
@@ -257,14 +299,6 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 			s.insertNodeIntoCommunity(node, bestComm)
 			moves++
 		}
-
-		fmt.Printf("Node %d moved from community %d to %d (gain: %.4f)\n",
-			node, oldComm, bestComm, bestGain)
-		actualModularity := s.GetModularity()
-		fmt.Printf("Current modularity after move: %.4f\n", actualModularity)
-		// Print community assignment after move for all communities
-		fmt.Printf("Current community assignments: %v\n", s.N2C)
-		fmt.Printf("Current community sizes: %v\n", s.C2N)
 
 		// Validate state after each move
 		if err := s.ValidateState(); err != nil {
@@ -393,7 +427,6 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 	if currentComm == targetComm {
 		return 0.0
 	}
-	// k_i_in 
 
 	oldModularity := s.GetModularity()
 
@@ -406,65 +439,179 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 	
 	return newModularity - oldModularity
 }
-
-// CreateSuperGraph creates a new graph where nodes are communities
+// CreateSuperGraph creates a new graph where each community becomes a single super-node
+// This prepares the data structures for the next level of Louvain optimization
 func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, error) {
-	communityMap := make(map[int][]int)
+	// Clean up any empty communities first
+	s.cleanupEmptyCommunities()
 	
-	// Count non-empty communities
-	numCommunities := 0
-	commToNewIndex := make(map[int]int)
+	// Validate current state
+	if err := s.ValidateState(); err != nil {
+		return nil, nil, fmt.Errorf("invalid state before creating super graph: %w", err)
+	}
 	
-	for comm, nodes := range s.C2N {
+	fmt.Printf("Creating super-graph from %d communities\n", len(s.C2N))
+	
+	// =============================================================================
+	// STEP 1: AGGREGATE COMMUNITIES INTO SUPER-NODES
+	// =============================================================================
+	// We need to map old community IDs to new super-node indices (0, 1, 2, ...)
+	
+	communityMap := make(map[int][]int)     // Maps super-node index -> original nodes it contains
+	commToNewIndex := make(map[int]int)     // Maps old community ID -> new super-node index
+	
+	// Count non-empty communities and create the mapping
+	numSuperNodes := 0
+	for oldCommID, nodes := range s.C2N {
 		if len(nodes) > 0 {
-			commToNewIndex[comm] = numCommunities
-			communityMap[numCommunities] = make([]int, len(nodes))
-			copy(communityMap[numCommunities], nodes)
-			numCommunities++
-		}
-	}
-	
-	// Create super graph
-	superGraph := NewNormalizedGraph(numCommunities)
-	
-	// Calculate community weights
-	for newIdx, originalComm := range commToNewIndex {
-		communityWeight := 0.0
-		for _, node := range s.C2N[originalComm] {
-			communityWeight += s.Graph.Weights[node]
-		}
-		superGraph.Weights[newIdx] = communityWeight
-	}
-	
-	// Add edges between communities
-	communityEdges := make(map[string]float64)
-	
-	for i := 0; i < s.Graph.NumNodes; i++ {
-		comm1 := commToNewIndex[s.N2C[i]]
-		
-		neighbors := s.Graph.GetNeighbors(i)
-		for neighbor, weight := range neighbors {
-			comm2 := commToNewIndex[s.N2C[neighbor]]
+			// This community becomes super-node with index numSuperNodes
+			commToNewIndex[oldCommID] = numSuperNodes
 			
-			// Create edge key with consistent ordering
-			var key string
-			if comm1 <= comm2 {
-				key = fmt.Sprintf("%d-%d", comm1, comm2)
-			} else {
-				key = fmt.Sprintf("%d-%d", comm2, comm1)
+			// Store which original nodes this super-node represents
+			communityMap[numSuperNodes] = make([]int, len(nodes))
+			copy(communityMap[numSuperNodes], nodes)
+			
+			numSuperNodes++
+			
+			fmt.Printf("Community %d (%d nodes) -> Super-node %d\n", 
+				oldCommID, len(nodes), numSuperNodes-1)
+		}
+	}
+	
+	if numSuperNodes == 0 {
+		return nil, nil, fmt.Errorf("no valid communities found")
+	}
+	
+	// Verify all nodes have valid community assignments
+	for i := 0; i < s.Graph.NumNodes; i++ {
+		nodeComm := s.N2C[i]
+		if _, exists := commToNewIndex[nodeComm]; !exists {
+			return nil, nil, fmt.Errorf("node %d references invalid community %d", i, nodeComm)
+		}
+	}
+	
+	// =============================================================================
+	// STEP 2: CREATE NEW SUPER-GRAPH STRUCTURE
+	// =============================================================================
+	// Create a brand new graph with numSuperNodes nodes
+	
+	superGraph := NewNormalizedGraph(numSuperNodes)
+	fmt.Printf("Created super-graph with %d super-nodes\n", numSuperNodes)
+	
+	// =============================================================================
+	// STEP 3: CALCULATE SUPER-NODE WEIGHTS
+	// =============================================================================
+	// Each super-node's weight = sum of weights of all original nodes it contains
+	
+	for superNodeIdx := 0; superNodeIdx < numSuperNodes; superNodeIdx++ {
+		originalNodes := communityMap[superNodeIdx]
+		totalWeight := 0.0
+		
+		for _, originalNode := range originalNodes {
+			if originalNode < 0 || originalNode >= len(s.Graph.Weights) {
+				return nil, nil, fmt.Errorf("invalid original node index %d", originalNode)
+			}
+			totalWeight += s.Graph.Weights[originalNode]
+		}
+		
+		superGraph.Weights[superNodeIdx] = totalWeight
+		fmt.Printf("Super-node %d weight: %.2f (from %d original nodes)\n", 
+			superNodeIdx, totalWeight, len(originalNodes))
+	}
+	
+	// =============================================================================
+	// STEP 4: AGGREGATE EDGE WEIGHTS BETWEEN COMMUNITIES
+	// =============================================================================
+	// For every edge in the original graph, determine which super-nodes it connects
+	// and accumulate the edge weights
+	
+	// Use string keys to track edges between super-nodes (e.g., "0-1", "2-2")
+	superEdgeWeights := make(map[string]float64)
+	
+	fmt.Println("Aggregating edge weights...")
+	
+	// Process every edge in the original graph
+	for nodeI := 0; nodeI < s.Graph.NumNodes; nodeI++ {
+		// Find which super-node contains nodeI
+		commI := s.N2C[nodeI]
+		superNodeI, exists := commToNewIndex[commI]
+		if !exists {
+			return nil, nil, fmt.Errorf("node %d community %d not found in mapping", nodeI, commI)
+		}
+		
+		// Get all neighbors of nodeI
+		neighbors := s.Graph.GetNeighbors(nodeI)
+		
+		for nodeJ, edgeWeight := range neighbors {
+			// Find which super-node contains nodeJ
+			commJ := s.N2C[nodeJ]
+			superNodeJ, exists := commToNewIndex[commJ]
+			if !exists {
+				return nil, nil, fmt.Errorf("neighbor %d community %d not found in mapping", nodeJ, commJ)
 			}
 			
-			communityEdges[key] += weight
+			// Create consistent edge key (smaller index first)
+			var edgeKey string
+			if superNodeI <= superNodeJ {
+				edgeKey = fmt.Sprintf("%d-%d", superNodeI, superNodeJ)
+			} else {
+				edgeKey = fmt.Sprintf("%d-%d", superNodeJ, superNodeI)
+			}
+			
+			// Accumulate the edge weight
+			superEdgeWeights[edgeKey] += edgeWeight
 		}
 	}
 	
-	// Add aggregated edges to super graph
-	for key, weight := range communityEdges {
-		var from, to int
-		fmt.Sscanf(key, "%d-%d", &from, &to)
-		superGraph.AddEdge(from, to, weight)
+	// =============================================================================
+	// STEP 5: ADD EDGES TO SUPER-GRAPH
+	// =============================================================================
+	// Convert the accumulated edge weights into actual edges in the super-graph
+	
+	edgeCount := 0
+	for edgeKey, totalWeight := range superEdgeWeights {
+		// Parse the edge key to get super-node indices
+		var fromSuperNode, toSuperNode int
+		n, err := fmt.Sscanf(edgeKey, "%d-%d", &fromSuperNode, &toSuperNode)
+		if n != 2 || err != nil {
+			return nil, nil, fmt.Errorf("failed to parse edge key %s: %w", edgeKey, err)
+		}
+		
+		// Validate super-node indices
+		if fromSuperNode < 0 || fromSuperNode >= numSuperNodes || 
+		   toSuperNode < 0 || toSuperNode >= numSuperNodes {
+			return nil, nil, fmt.Errorf("invalid super-node indices: %d-%d (max: %d)", 
+				fromSuperNode, toSuperNode, numSuperNodes-1)
+		}
+		
+		// Add the edge to the super-graph
+		superGraph.AddEdge(fromSuperNode, toSuperNode, totalWeight)
+		edgeCount++
+		
+		// Log self-loops (intra-community edges) vs inter-community edges
+		if fromSuperNode == toSuperNode {
+			fmt.Printf("Self-loop: Super-node %d, weight: %.2f (intra-community)\n", 
+				fromSuperNode, totalWeight)
+		} else {
+			fmt.Printf("Inter-edge: Super-node %d <-> %d, weight: %.2f\n", 
+				fromSuperNode, toSuperNode, totalWeight)
+		}
 	}
-
+	
+	fmt.Printf("Added %d edges to super-graph\n", edgeCount)
+	
+	// =============================================================================
+	// STEP 6: VALIDATE SUPER-GRAPH
+	// =============================================================================
+	// Ensure the super-graph is valid before returning
+	
+	if err := superGraph.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("created invalid super-graph: %w", err)
+	}
+	
+	fmt.Printf("Super-graph creation complete: %d nodes, %d edges\n", 
+		superGraph.NumNodes, edgeCount)
+	
 	return superGraph, communityMap, nil
 }
 

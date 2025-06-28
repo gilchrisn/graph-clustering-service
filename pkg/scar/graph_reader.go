@@ -2,6 +2,7 @@ package scar
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -51,14 +52,19 @@ func (gr *GraphReader) ReadFromFile(filename string) (*GraphStructure, error) {
 	}
 	defer file.Close()
 
+	fmt.Printf("=== READING GRAPH FILE: %s ===\n", filename)
 	edges := make(map[int64][]int64)
 	maxNode := int64(0)
 	edgeCount := int64(0)
 
 	scanner := bufio.NewScanner(file)
+	lineNum := 0
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		lineNum++
+		
 		if line == "" || strings.HasPrefix(line, "#") {
+			fmt.Printf("Line %d: %s (skipped)\n", lineNum, line)
 			continue
 		}
 
@@ -67,6 +73,7 @@ func (gr *GraphReader) ReadFromFile(filename string) (*GraphStructure, error) {
 			src, err1 := strconv.ParseInt(parts[0], 10, 64)
 			dst, err2 := strconv.ParseInt(parts[1], 10, 64)
 			if err1 == nil && err2 == nil {
+				fmt.Printf("Line %d: Edge %d -- %d\n", lineNum, src, dst)
 				edges[src] = append(edges[src], dst)
 				edges[dst] = append(edges[dst], src)
 				if src > maxNode {
@@ -76,12 +83,22 @@ func (gr *GraphReader) ReadFromFile(filename string) (*GraphStructure, error) {
 					maxNode = dst
 				}
 				edgeCount++
+			} else {
+				fmt.Printf("Line %d: %s (parse error: %v, %v)\n", lineNum, line, err1, err2)
 			}
+		} else {
+			fmt.Printf("Line %d: %s (insufficient fields)\n", lineNum, line)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, err
+	}
+
+	fmt.Printf("Graph summary: %d nodes (0-%d), %d edges\n", maxNode+1, maxNode, edgeCount)
+	fmt.Println("Adjacency list:")
+	for i := int64(0); i <= maxNode; i++ {
+		fmt.Printf("Node %d: neighbors %v\n", i, edges[i])
 	}
 
 	vertices := gr.buildVertices(edges, maxNode)
@@ -126,14 +143,4 @@ func (gr *GraphReader) removeDuplicatesAndSort(neighbors []int64) []int64 {
 		}
 	}
 	return unique
-}
-
-// Legacy function for backward compatibility
-func ReadGraphFromFile(filename string) *GraphStructure {
-	reader := NewGraphReader()
-	graph, err := reader.ReadFromFile(filename)
-	if err != nil {
-		panic(err) // Maintain original behavior
-	}
-	return graph
 }
