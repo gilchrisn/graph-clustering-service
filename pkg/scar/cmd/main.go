@@ -43,10 +43,28 @@ func parseArguments(args []string) scar.SCARConfig {
 		EdgesFile:    "",
 		PropertyFile: "",
 		PathFile:     "",
+		Prefix:       "", // Will be set from GraphFile name
 		K:            10,
 		NK:           4,
 		Threshold:    0.5,
 		UseLouvain:   false,
+		SketchOutput: false, // Add this line
+	}
+	
+	// Set default prefix from graph file name
+	if config.GraphFile != "" {
+		// Extract base name without extension
+		baseName := config.GraphFile
+		if idx := strings.LastIndex(baseName, "."); idx != -1 {
+			baseName = baseName[:idx]
+		}
+		if idx := strings.LastIndex(baseName, "/"); idx != -1 {
+			baseName = baseName[idx+1:]
+		}
+		if idx := strings.LastIndex(baseName, "\\"); idx != -1 {
+			baseName = baseName[idx+1:]
+		}
+		config.Prefix = baseName
 	}
 	
 	fmt.Printf("=== PARSING ARGUMENTS ===\n")
@@ -69,6 +87,9 @@ func parseArguments(args []string) scar.SCARConfig {
 		} else if strings.HasPrefix(arg, "-path=") {
 			config.PathFile = strings.TrimPrefix(arg, "-path=")
 			fmt.Printf("  PathFile = '%s'\n", config.PathFile)
+		} else if strings.HasPrefix(arg, "-prefix=") {
+			config.Prefix = strings.TrimPrefix(arg, "-prefix=")
+			fmt.Printf("  Prefix = '%s'\n", config.Prefix)
 		} else if strings.HasPrefix(arg, "-k=") {
 			if val, err := strconv.ParseInt(strings.TrimPrefix(arg, "-k="), 10, 64); err == nil {
 				config.K = val
@@ -87,6 +108,9 @@ func parseArguments(args []string) scar.SCARConfig {
 		} else if arg == "-louvain" {
 			config.UseLouvain = true
 			fmt.Printf("  UseLouvain = true\n")
+		} else if arg == "-sketch-output" {  // Add this block
+			config.SketchOutput = true
+			fmt.Printf("  SketchOutput = true\n")
 		} else {
 			fmt.Printf("  Unknown argument: '%s'\n", arg)
 		}
@@ -97,7 +121,9 @@ func parseArguments(args []string) scar.SCARConfig {
 	fmt.Printf("  PropertyFile: '%s'\n", config.PropertyFile)
 	fmt.Printf("  PathFile: '%s'\n", config.PathFile)
 	fmt.Printf("  OutputFile: '%s'\n", config.OutputFile)
+	fmt.Printf("  Prefix: '%s'\n", config.Prefix)
 	fmt.Printf("  UseLouvain: %t\n", config.UseLouvain)
+	fmt.Printf("  SketchOutput: %t\n", config.SketchOutput)
 	fmt.Println()
 	
 	return config
