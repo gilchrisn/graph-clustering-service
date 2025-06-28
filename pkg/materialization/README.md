@@ -1,216 +1,284 @@
-# Materialization Module
+# Graph Materialization Service
 
-The materialization module converts heterogeneous graphs into homogeneous graphs using meta path instances, enabling traditional graph algorithms like Louvain clustering.
-
-## Features
-
-- **Meta Path Traversal**: Find all instances of a given meta path in the graph
-- **Two Interpretation Modes**: DirectTraversal and MeetingBased
-- **Multiple Aggregation Strategies**: Count, Sum, Average, Maximum, Minimum
-- **Weight Normalization**: Degree, Max, Standard normalization options
-- **Memory Management**: Configurable limits and progress tracking
-- **Parallel Processing**: Multi-threaded instance generation
+Converts heterogeneous graphs (multiple node/edge types) into homogeneous graphs (single node type) using meta-path traversal. Perfect for feeding into community detection algorithms like Louvain, Leiden, or SCAR.
 
 ## Quick Start
 
 ```go
-package main
+import "github.com/gilchrisn/graph-clustering-service/pkg/materialization"
 
-import (
-    "fmt"
-    "github.com/gilchrisn/graph-clustering-service/pkg/materialization"
-    "github.com/gilchrisn/graph-clustering-service/pkg/validation"
+// Convert SCAR-format input directly to edge list
+err := materialization.SCARToMaterialization(
+    "graph.txt",      // Input graph edges
+    "properties.txt", // Node type assignments  
+    "path.txt",       // Meta-path specification
+    "output.txt"      // Edge list output
 )
+```
 
-func main() {
-    // Load validated data
-    graph, _ := validation.LoadAndValidateGraph("data/graph.json")
-    metaPath, _ := validation.LoadAndValidateMetaPath("data/meta_path.json")
+## Input Formats
+
+### Option 1: SCAR Format (Simple)
+
+**Graph File** (`graph.txt`) - Edge list:
+```
+0 1
+1 2
+2 0
+3 4
+4 5
+```
+
+**Properties File** (`properties.txt`) - Node types:
+```
+0 0
+1 1
+2 0
+3 0
+4 1
+5 1
+```
+
+**Path File** (`path.txt`) - Meta-path as type sequence:
+```
+0
+1
+0
+```
+
+### Option 2: JSON Format (Advanced)
+
+**Graph JSON**:
+```json
+{
+  "nodes": {
+    "alice": {"id": "alice", "type": "Author", "properties": {}},
+    "paper1": {"id": "paper1", "type": "Paper", "properties": {}},
+    "bob": {"id": "bob", "type": "Author", "properties": {}}
+  },
+  "edges": [
+    {"from": "alice", "to": "paper1", "type": "writes", "weight": 1.0},
+    {"from": "bob", "to": "paper1", "type": "writes", "weight": 1.0}
+  ]
+}
+```
+
+**Meta-path JSON**:
+```json
+{
+  "id": "author-collaboration",
+  "node_sequence": ["Author", "Paper", "Author"],
+  "edge_sequence": ["writes", "writes"]
+}
+```
+
+## Output Format
+
+Simple edge list compatible with most community detection tools:
+
+```
+alice bob 2.000000
+alice charlie 1.000000
+bob charlie 1.000000
+diana alice 1.000000
+```
+
+## API Reference
+
+### Basic Usage
+
+```go
+// Parse SCAR input
+graph, metaPath, err := materialization.ParseSCARInput("graph.txt", "properties.txt", "path.txt")
+
+// Configure materialization
+config := materialization.DefaultMaterializationConfig()
+config.Aggregation.Strategy = materialization.Count
+config.Aggregation.Symmetric = true
+
+// Run materialization
+engine := materialization.NewMaterializationEngine(graph, metaPath, config, nil)
+result, err := engine.Materialize()
+
+// Save as edge list
+err = materialization.SaveAsSimpleEdgeList(result.HomogeneousGraph, "output.txt")
+```
+
+### Configuration Options
+
+```go
+type MaterializationConfig struct {
+    Traversal   TraversalConfig   // Path finding settings
+    Aggregation AggregationConfig // Edge weight calculation
+    Progress    ProgressConfig    // Progress reporting
+}
+
+// Key settings:
+config.Aggregation.Strategy = Count     // Count, Sum, Average, Maximum, Minimum
+config.Aggregation.Symmetric = true     // Force symmetric edges
+config.Traversal.MaxInstances = 1000000 // Memory limit
+config.Traversal.AllowCycles = false    // Prevent cycles in paths
+```
+
+### Advanced Pipeline
+
+```go
+// Custom progress tracking
+progressCb := func(current, total int, message string) {
+    fmt.Printf("Progress: %d/%d - %s\n", current, total, message)
+}
+
+engine := materialization.NewMaterializationEngine(graph, metaPath, config, progressCb)
+result, err := engine.Materialize()
+
+// Multiple output formats
+materialization.SaveAsSimpleEdgeList(result.HomogeneousGraph, "edges.txt")
+materialization.SaveAsCSV(result.HomogeneousGraph, "edges.csv") 
+materialization.SaveAsJSON(result.HomogeneousGraph, "graph.json")
+materialization.SaveMaterializationResult(result, "detailed_result.json")
+```
+
+## Common Use Cases
+
+### Author Collaboration Network
+**Input**: Authors write Papers  
+**Meta-path**: Author → Paper → Author  
+**Output**: Author-Author collaboration edges
+
+### Citation Co-occurrence
+**Input**: Papers cite Papers  
+**Meta-path**: Paper → Paper → Paper  
+**Output**: Papers connected by shared citations
+
+### User-Item Similarity  
+**Input**: Users rate Items  
+**Meta-path**: User → Item → User  
+**Output**: User-User similarity based on shared items
+
+## Pipeline Integration
+
+### With Louvain Community Detection
+
+```bash
+# Step 1: Materialize graph
+./materialization -graph="network.txt" -props="props.txt" -path="path.txt" -output="edges.txt"
+
+# Step 2: Run Louvain
+./louvain edges.txt
+```
+
+### With SCAR Clustering
+
+```bash
+# Step 1: Materialize
+./materialization -graph="data.txt" -props="types.txt" -path="metapath.txt" -output="homogeneous.txt"
+
+# Step 2: Run SCAR  
+./scar.exe "homogeneous.txt" -louvain -sketch-output
+```
+
+### Programmatic Pipeline
+
+```go
+func runPipeline(graphFile, propsFile, pathFile, outputDir string) error {
+    // Materialize
+    graph, metaPath, err := materialization.ParseSCARInput(graphFile, propsFile, pathFile)
+    if err != nil {
+        return err
+    }
     
-    // Configure materialization
     config := materialization.DefaultMaterializationConfig()
-    config.Aggregation.Strategy = materialization.Count
-    config.Aggregation.Interpretation = materialization.DirectTraversal
-    
-    // Create engine and materialize
     engine := materialization.NewMaterializationEngine(graph, metaPath, config, nil)
     result, err := engine.Materialize()
     if err != nil {
-        panic(err)
+        return err
     }
     
-    fmt.Printf("Generated %d edges from %d instances\n", 
-        len(result.HomogeneousGraph.Edges), result.Statistics.InstancesGenerated)
-}
-```
-
-## Core Concepts
-
-### Meta Path Instances
-A meta path instance is a concrete path in the graph that follows the meta path pattern:
-
-```
-Meta Path: Author → Paper → Author
-Instance:  Alice → "ML Paper" → Bob
-```
-
-### Interpretation Modes
-
-#### 1. DirectTraversal (Default)
-Connects start and end nodes directly:
-- `Alice → "ML Paper" → Bob` creates edge `Alice ↔ Bob`
-- Weight = aggregation of all instances between Alice and Bob
-
-#### 2. MeetingBased  
-Connects nodes that meet at intermediate nodes:
-- `Alice → "ICML"`, `Bob → "ICML"` creates edge `Alice ↔ Bob`
-- Weight = combination of their relationships to "ICML"
-
-### Aggregation Strategies
-
-```go
-type AggregationStrategy int
-
-const (
-    Count   AggregationStrategy = iota // Count instances
-    Sum                               // Sum instance weights
-    Average                           // Average instance weights  
-    Maximum                           // Maximum instance weight
-    Minimum                           // Minimum instance weight
-)
-```
-
-## Configuration
-
-### Full Configuration Example
-
-```go
-config := materialization.MaterializationConfig{
-    Traversal: materialization.TraversalConfig{
-        Strategy:       materialization.BFS,
-        MaxPathLength:  10,
-        AllowCycles:    false,
-        MaxInstances:   1000000,
-        TimeoutSeconds: 300,
-        Parallelism:    4,
-    },
-    Aggregation: materialization.AggregationConfig{
-        Strategy:      materialization.Count,
-        Interpretation: materialization.DirectTraversal,
-        Normalization: materialization.NoNormalization,
-        MinWeight:     1.0,
-        MaxEdges:      0, // No limit
-        Symmetric:     true,
-    },
-    Progress: materialization.ProgressConfig{
-        EnableProgress: true,
-        ReportInterval: 10000,
-    },
-}
-```
-
-### Key Parameters
-
-- **MaxInstances**: Memory limit for path instances
-- **TimeoutSeconds**: Maximum processing time
-- **Parallelism**: Number of worker threads
-- **MinWeight**: Filter edges below threshold
-- **MaxEdges**: Keep only top-k edges
-- **Symmetric**: Force symmetric edges
-
-## Usage Patterns
-
-### Basic Materialization
-
-```go
-func basicMaterialization(graph *models.HeterogeneousGraph, metaPath *models.MetaPath) {
-    config := materialization.DefaultMaterializationConfig()
-    
-    progressCb := func(current, total int, message string) {
-        fmt.Printf("\rProgress: %d/%d - %s", current, total, message)
-    }
-    
-    engine := materialization.NewMaterializationEngine(graph, metaPath, config, progressCb)
-    result, err := engine.Materialize()
+    // Save edge list
+    edgeFile := filepath.Join(outputDir, "edges.txt")
+    err = materialization.SaveAsSimpleEdgeList(result.HomogeneousGraph, edgeFile)
     if err != nil {
-        log.Fatal(err)
+        return err
     }
     
-    // Save result
-    materialization.SaveHomogeneousGraph(result.HomogeneousGraph, "output/graph.edgelist")
+    // Run community detection
+    cmd := exec.Command("./louvain", edgeFile)
+    cmd.Dir = outputDir
+    return cmd.Run()
 }
 ```
 
-### Memory-Conscious Materialization
+## Performance Tips
+
+### For Large Graphs (>100K nodes)
+```go
+config.Traversal.MaxInstances = 500000    // Reduce memory usage
+config.Aggregation.MinWeight = 0.1        // Filter weak edges
+config.Aggregation.MaxEdges = 1000000     // Limit output size
+```
+
+### For High Quality Results
+```go
+config.Aggregation.Strategy = Average     // Better than Count
+config.Traversal.AllowCycles = false      // Cleaner paths
+config.Aggregation.Normalization = DegreeNorm // Normalize weights
+```
+
+### For Speed
+```go
+config.Traversal.MaxInstances = 100000    // Early termination
+config.Aggregation.Strategy = Count       // Fastest aggregation
+config.Progress.EnableProgress = false    // Disable progress reporting
+```
+
+## Error Handling
+
+Common issues and solutions:
 
 ```go
-func checkFeasibility(engine *materialization.MaterializationEngine) {
-    canMaterialize, reason, err := engine.CanMaterialize(1000) // 1GB limit
-    if err != nil {
-        log.Fatal(err)
-    }
-    
-    if !canMaterialize {
-        fmt.Printf("Cannot materialize: %s\n", reason)
-        return
-    }
-    
-    // Proceed with materialization
-    result, err := engine.Materialize()
-    // ...
+// Check input validity
+if err := graph.Validate(); err != nil {
+    log.Fatalf("Invalid graph: %v", err)
+}
+
+// Handle memory limits
+estimated, err := engine.GetMemoryEstimate()
+if estimated > maxMemoryMB {
+    config.Traversal.MaxInstances = 50000 // Reduce limit
+}
+
+// Verify meta-path traversability  
+generator := materialization.NewInstanceGenerator(graph, metaPath, config.Traversal)
+if err := generator.ValidateMetaPathTraversability(); err != nil {
+    log.Fatalf("Meta-path not traversable: %v", err)
 }
 ```
 
-## Output Formats
+## Build and Install
 
-### Homogeneous Graph Structure
+```bash
+# Build the library
+go build ./pkg/materialization
 
-```go
-type HomogeneousGraph struct {
-    NodeType   string                 // "Author" for symmetric paths
-    Nodes      map[string]Node        // All nodes in result
-    Edges      map[EdgeKey]float64    // (from,to) -> weight  
-    Statistics GraphStatistics        // Graph metrics
-    MetaPath   models.MetaPath        // Original meta path
-}
+# Build CLI tool (if available)
+go build -o materialization ./cmd/materialization
+
+# Run tests
+go test ./pkg/materialization/...
+
+# Run with verification
+go test ./pkg/materialization/ -run TestVerifyMaterialization
 ```
 
-### Supported Output Formats
+## Examples
 
-```go
-// Edge list format (default)
-materialization.SaveHomogeneousGraph(graph, "output/graph.edgelist")
+See `materialization_test.go` for complete examples including:
+- Author collaboration networks
+- Citation networks  
+- User-item recommendation graphs
+- Performance benchmarks
+- Verification and debugging tools
 
-// CSV format  
-materialization.SaveHomogeneousGraph(graph, "output/graph.csv")
+## License
 
-// JSON format
-materialization.SaveHomogeneousGraph(graph, "output/graph.json")
-```
-
-### Edge List Format
-```
-6 8
-alice bob 3.000000
-alice charlie 1.000000
-bob charlie 2.000000
-```
-
-## Integration with Louvain
-
-The materialized homogeneous graph can be directly used with the Louvain module:
-
-```go
-// Materialize graph
-result, err := engine.Materialize()
-if err != nil {
-    log.Fatal(err)
-}
-
-// Convert to Louvain format and run clustering
-louvainGraph := convertToLouvainGraph(result.HomogeneousGraph)
-louvainConfig := louvain.DefaultLouvainConfig()
-communities, err := louvain.RunLouvain(louvainGraph, louvainConfig)
-```
-
-This forms the complete pipeline: `Heterogeneous Graph → Materialization → Louvain → Communities`
+MIT License - see LICENSE file for details.

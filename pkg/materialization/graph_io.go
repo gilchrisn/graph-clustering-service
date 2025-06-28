@@ -219,3 +219,37 @@ func SaveMaterializationResult(result *MaterializationResult, outputPath string)
 
 	return nil
 }
+
+
+func SaveAsSimpleEdgeList(graph *HomogeneousGraph, outputPath string) error {
+	if graph == nil {
+		return fmt.Errorf("graph cannot be nil")
+	}
+	
+	// Create directory if it doesn't exist
+	dir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+	
+	// Write edges: from to weight (or just from to if weight is 1.0)
+	for edgeKey, weight := range graph.Edges {
+		if weight == 1.0 {
+			// Skip weight if it's 1.0 (SCAR format allows this)
+			_, err = fmt.Fprintf(file, "%s %s\n", edgeKey.From, edgeKey.To)
+		} else {
+			_, err = fmt.Fprintf(file, "%s %s %.6f\n", edgeKey.From, edgeKey.To, weight)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to write edge: %w", err)
+		}
+	}
+	
+	return nil
+}

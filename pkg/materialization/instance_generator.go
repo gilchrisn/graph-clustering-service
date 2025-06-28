@@ -204,7 +204,7 @@ for _, instance := range allInstances {
 }
 
 // Analyze zero-instance nodes in detail
-startNodeType := ig.metaPath.NodeSequence[0]
+startNodeType = ig.metaPath.NodeSequence[0]
 requiredFirstEdge := ""
 requiredFirstTarget := ""
 if len(ig.metaPath.EdgeSequence) > 0 {
