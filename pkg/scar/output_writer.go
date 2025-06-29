@@ -74,7 +74,6 @@ func (ow *OutputWriter) WriteLouvainResults(
 	fmt.Println("Output files written successfully")
 	return nil
 }
-
 // writeMappingFile writes the {prefix}_mapping.dat file
 func (ow *OutputWriter) writeMappingFile(
 	config SCARConfig,
@@ -98,7 +97,8 @@ func (ow *OutputWriter) writeMappingFile(
 		}
 		
 		for commId, nodes := range communityToNodes {
-			fmt.Fprintf(file, "c0_l0_%d\n", commId)
+			// Start from level 1, not 0
+			fmt.Fprintf(file, "c0_l1_%d\n", commId)
 			fmt.Fprintf(file, "%d\n", len(nodes))
 			for _, nodeId := range nodes {
 				fmt.Fprintf(file, "%d\n", nodeId)
@@ -110,7 +110,8 @@ func (ow *OutputWriter) writeMappingFile(
 	// Write hierarchy - traverse all levels
 	for level, mapping := range partitionTracker.levelMappings {
 		for superNodeId, originalNodes := range mapping.superNodeToOriginalNodes {
-			fmt.Fprintf(file, "c0_l%d_%d\n", level, superNodeId)
+			// Add 1 to level to start from 1
+			fmt.Fprintf(file, "c0_l%d_%d\n", level+1, superNodeId)
 			fmt.Fprintf(file, "%d\n", len(originalNodes))
 			for _, nodeId := range originalNodes {
 				fmt.Fprintf(file, "%d\n", nodeId)
@@ -137,20 +138,26 @@ func (ow *OutputWriter) writeMappingFile(
 	}
 	
 	for commId, nodes := range finalCommunityToNodes {
-		fmt.Fprintf(file, "c0_l%d_%d\n", finalLevel, commId)
+		// Add 1 to level to start from 1
+		fmt.Fprintf(file, "c0_l%d_%d\n", finalLevel+1, commId)
 		fmt.Fprintf(file, "%d\n", len(nodes))
 		for _, nodeId := range nodes {
 			fmt.Fprintf(file, "%d\n", nodeId)
 		}
 	}
 
-	if len(finalCommunityToNodes) > 1 {
+	// Only create virtual root if we have a multi-level hierarchy AND multiple communities at the highest level
+	// Don't create virtual root if:
+	// 1. No hierarchy (currentLevel == 0) - already handled above
+	// 2. Only one community at the final level
+	if finalLevel > 0 && len(finalCommunityToNodes) > 1 {
 		// Add virtual root that contains all final communities  
 		allNodes := make([]int64, 0)
 		for _, nodes := range finalCommunityToNodes {
 			allNodes = append(allNodes, nodes...)
 		}
-		fmt.Fprintf(file, "c0_l%d_0\n", finalLevel + 1)
+		// Add 1 to level and then +1 for virtual root
+		fmt.Fprintf(file, "c0_l%d_0\n", finalLevel+2)
 		fmt.Fprintf(file, "%d\n", len(allNodes))
 		for _, nodeId := range allNodes {
 			fmt.Fprintf(file, "%d\n", nodeId)
@@ -178,7 +185,8 @@ func (ow *OutputWriter) writeHierarchyFile(
 	// Write parent-child relationships for each level
 	for level, mapping := range partitionTracker.levelMappings {
 		for superNodeId, childNodes := range mapping.superNodeToChildNodes {
-			fmt.Fprintf(file, "c0_l%d_%d\n", level, superNodeId)
+			// Add 1 to level to start from 1
+			fmt.Fprintf(file, "c0_l%d_%d\n", level+1, superNodeId)
 			fmt.Fprintf(file, "%d\n", len(childNodes))
 			for _, childId := range childNodes {
 				if level == 0 {
@@ -186,24 +194,28 @@ func (ow *OutputWriter) writeHierarchyFile(
 					fmt.Fprintf(file, "%d\n", childId)
 				} else {
 					// Higher levels: children are from previous level
-					fmt.Fprintf(file, "c0_l%d_%d\n", level-1, childId)
+					// level is already adjusted, so use level instead of level-1
+					fmt.Fprintf(file, "c0_l%d_%d\n", level, childId)
 				}
 			}
 		}
 	}
 	
-	// Add virtual root level if multiple final communities exist
+	// Add virtual root level if multiple final communities exist AND we have hierarchy
 	uniqueComms := make(map[int64]bool)
 	for _, comm := range finalCommunity {
 		uniqueComms[comm] = true
 	}
 	
-	if len(uniqueComms) > 1 {
+	// Only create virtual root if we have hierarchy AND multiple communities at final level
+	if partitionTracker.currentLevel > 0 && len(uniqueComms) > 1 {
 		// Virtual root contains all final communities
-		fmt.Fprintf(file, "c0_l%d_0\n", partitionTracker.currentLevel + 1)
+		// Add 1 to currentLevel and then +1 for virtual root
+		fmt.Fprintf(file, "c0_l%d_0\n", partitionTracker.currentLevel+2)
 		fmt.Fprintf(file, "%d\n", len(uniqueComms))
 		for comm := range uniqueComms {
-			fmt.Fprintf(file, "c0_l%d_%d\n", partitionTracker.currentLevel, comm)
+			// Add 1 to currentLevel 
+			fmt.Fprintf(file, "c0_l%d_%d\n", partitionTracker.currentLevel+1, comm)
 		}
 	}
 	
@@ -231,15 +243,17 @@ func (ow *OutputWriter) writeRootFile(
         uniqueComms[comm] = true
     }
     
-    // Only add virtual root level if there are multiple final communities
-    if len(uniqueComms) > 1 {
+    // Only add virtual root level if we have hierarchy AND multiple final communities
+    if partitionTracker.currentLevel > 0 && len(uniqueComms) > 1 {
         // Create virtual root that contains all final communities
-        fmt.Fprintf(file, "c0_l%d_0\n", partitionTracker.currentLevel + 1)
+        // Add 1 to currentLevel and then +1 for virtual root
+        fmt.Fprintf(file, "c0_l%d_0\n", partitionTracker.currentLevel+2)
     } else {
-        // Single final community - it's already the root
+        // Single final community or no hierarchy - it's already the root
         finalLevel := partitionTracker.currentLevel
         for comm := range uniqueComms {
-            fmt.Fprintf(file, "c0_l%d_%d\n", finalLevel, comm)
+            // Add 1 to finalLevel to start from 1
+            fmt.Fprintf(file, "c0_l%d_%d\n", finalLevel+1, comm)
         }
     }
     
