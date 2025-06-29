@@ -2,10 +2,11 @@ package louvain
 
 import (
 	"fmt"
+	// "go/format"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
+	// "strconv"
 )
 
 // OutputWriter interface for flexible output generation
@@ -18,56 +19,161 @@ type OutputWriter interface {
 }
 
 // FileWriter implements OutputWriter for file-based output
-type FileWriter struct{}
+type FileWriter struct {
+	hierarchy map[string][]string // id -> children
+	mapping   map[string][]string // id -> original nodes
+	rootID    string               // root community ID
+}
 
 // NewFileWriter creates a new file-based output writer
 func NewFileWriter() OutputWriter {
-	return &FileWriter{}
+	return &FileWriter{
+		hierarchy: make(map[string][]string),
+		mapping:   make(map[string][]string),
+		rootID:    "c0_l0_0", // Default root ID
+	}
 }
 
 // WriteAll writes all output files
 func (fw *FileWriter) WriteAll(result *LouvainResult, parser *GraphParser, outputDir string, prefix string) error {
-	// Debug output
-	for level, levelInfo := range result.Levels {
-		fmt.Printf("DEBUG: Level %d has %d communities\n", level, len(levelInfo.Communities))
-		for commID, nodes := range levelInfo.Communities {
-			if len(nodes) == 0 {
-				fmt.Printf("DEBUG: Level %d community %d is empty\n", level, commID)
+	fmt.Printf("=== COMPLETE LOUVAIN RESULT DEBUG ===\n")
+	fmt.Printf("Total Levels: %d\n", len(result.Levels))
+	fmt.Printf("Final Communities: %v\n", result.FinalCommunities)
+	fmt.Printf("Modularity: %f\n", result.Modularity)
+	fmt.Printf("NumLevels: %d\n", result.NumLevels)
+	
+	fmt.Printf("\n=== PARSER DEBUG ===\n")
+	fmt.Printf("NumNodes: %d\n", parser.NumNodes)
+	fmt.Printf("OriginalToNormalized: %v\n", parser.OriginalToNormalized)
+	fmt.Printf("NormalizedToOriginal: %v\n", parser.NormalizedToOriginal)
+	
+	fmt.Printf("\n=== LEVEL BY LEVEL DEBUG ===\n")
+	for i, level := range result.Levels {
+		fmt.Printf("\n--- LEVEL %d ---\n", i)
+		fmt.Printf("Level: %d\n", level.Level)
+		fmt.Printf("NumCommunities: %d\n", level.NumCommunities)
+		fmt.Printf("NumMoves: %d\n", level.NumMoves)
+		fmt.Printf("Modularity: %f\n", level.Modularity)
+		
+		fmt.Printf("Communities (commID -> nodes):\n")
+		for commID, nodes := range level.Communities {
+			fmt.Printf("  %d: %v\n", commID, nodes)
+		}
+		
+		fmt.Printf("CommunityMap (node -> commID):\n")
+		for node, commID := range level.CommunityMap {
+			fmt.Printf("  %d: %d\n", node, commID)
+		}
+		
+		fmt.Printf("SuperNodeToCommMap exists: %t\n", level.SuperNodeToCommMap != nil)
+		if level.SuperNodeToCommMap != nil {
+			fmt.Printf("SuperNodeToCommMap (superNode -> prevCommID):\n")
+			for superNode, prevComm := range level.SuperNodeToCommMap {
+				fmt.Printf("  %d: %d\n", superNode, prevComm)
 			}
 		}
+		
+		if level.Graph != nil {
+			fmt.Printf("Graph NumNodes: %d\n", level.Graph.NumNodes)
+			fmt.Printf("Graph TotalWeight: %f\n", level.Graph.TotalWeight)
+		} else {
+			fmt.Printf("Graph: nil\n")
+		}
 	}
-
-	// Create output directory if it doesn't exist
+	
+	fmt.Printf("\n=== BUILDING STRUCTURES ===\n")
+	// Build the two data structures
+	fw.buildStructures(result, parser)
+	
+	fmt.Printf("\n=== BUILT HIERARCHY ===\n")
+	for id, children := range fw.hierarchy {
+		fmt.Printf("%s: %v\n", id, children)
+	}
+	
+	fmt.Printf("\n=== BUILT MAPPING ===\n")
+	for id, nodes := range fw.mapping {
+		fmt.Printf("%s: %v\n", id, nodes)
+	}
+	
+	fmt.Printf("\n=== CREATING OUTPUT FILES ===\n")
+	// Create output directory
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 	
-	// Write mapping file
-	mappingPath := filepath.Join(outputDir, fmt.Sprintf("%s.mapping", prefix))
-	if err := fw.WriteMapping(result, parser, mappingPath); err != nil {
-		return fmt.Errorf("failed to write mapping: %w", err)
+	// Write files
+	files := map[string]func() error{
+		"mapping":   func() error { return fw.WriteMapping(result, parser, filepath.Join(outputDir, prefix+".mapping")) },
+		"hierarchy": func() error { return fw.WriteHierarchy(result, parser, filepath.Join(outputDir, prefix+".hierarchy")) },
+		"root":      func() error { return fw.WriteRoot(result, parser, filepath.Join(outputDir, prefix+".root")) },
+		"edges":     func() error { return fw.WriteEdges(result, parser, filepath.Join(outputDir, prefix+".edges")) },
 	}
 	
-	// Write hierarchy file
-	hierarchyPath := filepath.Join(outputDir, fmt.Sprintf("%s.hierarchy", prefix))
-	if err := fw.WriteHierarchy(result, parser, hierarchyPath); err != nil {
-		return fmt.Errorf("failed to write hierarchy: %w", err)
-	}
-	
-	// Write root file
-	rootPath := filepath.Join(outputDir, fmt.Sprintf("%s.root", prefix))
-	if err := fw.WriteRoot(result, parser, rootPath); err != nil {
-		return fmt.Errorf("failed to write root: %w", err)
-	}
-	
-	// Write edges file
-	edgesPath := filepath.Join(outputDir, fmt.Sprintf("%s.edges", prefix))
-	if err := fw.WriteEdges(result, parser, edgesPath); err != nil {
-		return fmt.Errorf("failed to write edges: %w", err)
+	for name, writeFunc := range files {
+		if err := writeFunc(); err != nil {
+			return fmt.Errorf("failed to write %s: %w", name, err)
+		}
 	}
 	
 	return nil
 }
+
+// buildStructures builds hierarchy and mapping
+func (fw *FileWriter) buildStructures(result *LouvainResult, parser *GraphParser) {
+	level := 0
+	for level < len(result.Levels) {
+		if level == 0 {
+			for commID, nodes := range result.Levels[level].Communities {
+				formattedID := fmt.Sprintf("c0_l%d_%d", level+1, commID)
+				fmt.Printf("Processing community %s with nodes %v\n", formattedID, nodes)
+				fw.mapping[formattedID] = []string{}
+				for _, node := range nodes {
+					fw.mapping[formattedID] = append(fw.mapping[formattedID], parser.NormalizedToOriginal[node])
+
+				}
+			}
+		} else {
+			for commID, nodes := range result.Levels[level].Communities {
+				formattedID := fmt.Sprintf("c0_l%d_%d", level+1, commID)
+				fmt.Printf("Processing community %s with nodes %v\n", formattedID, nodes)
+				fw.mapping[formattedID] = []string{}
+				fw.hierarchy[formattedID] = []string{}
+				for _, node := range nodes {
+					childOriginalID := result.Levels[level-1].SuperNodeToCommMap[node]
+					fmt.Printf("  Child original ID: %d from %d\n", childOriginalID, node)
+					formattedChildID := fmt.Sprintf("c0_l%d_%d", level, childOriginalID)
+					fw.mapping[formattedID] = append(fw.mapping[formattedID], fw.mapping[formattedChildID]...)
+					fw.hierarchy[formattedID] = append(fw.hierarchy[formattedID], formattedChildID)
+				}
+			}
+		}
+		level++
+	}
+
+	// if top level has > 1 community, merge them into a single root community
+	if len(result.Levels) > 0 && len(result.Levels[len(result.Levels)-1].Communities) > 1 {
+		rootID := fmt.Sprintf("c0_l%d_0", len(result.Levels))
+		fw.rootID = rootID
+		fw.hierarchy[rootID] = []string{}
+		fw.mapping[rootID] = []string{}
+		for commID, _ := range result.Levels[len(result.Levels)-1].Communities {
+			formattedID := fmt.Sprintf("c0_l%d_%d", len(result.Levels)-1, commID)
+			fw.hierarchy[rootID] = append(fw.hierarchy[rootID], formattedID)
+			fw.mapping[rootID] = append(fw.mapping[rootID], fw.mapping[formattedID]...)
+		}
+	} else {
+		// Get the id of the only community in the top level
+		if len(result.Levels) > 0 && len(result.Levels[len(result.Levels)-1].Communities) == 1 {
+			for commID := range result.Levels[len(result.Levels)-1].Communities {
+				fw.rootID = fmt.Sprintf("c0_l%d_%d", len(result.Levels)-1, commID)
+				break
+			}
+		} else {
+			fw.rootID = "c0_l0_0" // Default root ID if no communities
+		}
+	}
+}
+
 
 // WriteMapping writes the mapping from communities to original nodes
 func (fw *FileWriter) WriteMapping(result *LouvainResult, parser *GraphParser, path string) error {
@@ -76,39 +182,23 @@ func (fw *FileWriter) WriteMapping(result *LouvainResult, parser *GraphParser, p
 		return err
 	}
 	defer file.Close()
-	
-	// Build the complete mapping from top-level communities to original nodes
-	topLevel := result.Levels[len(result.Levels)-1]
-	
-	// Create sorted community list for consistent output
-	var communityIDs []int
-	for commID := range topLevel.Communities {
-		communityIDs = append(communityIDs, commID)
-	}
-	sort.Ints(communityIDs)
 
-	var nodeCount int
-	
-	// Write each community and its original nodes
-	for _, commID := range communityIDs {
-		// Get all original nodes in this top-level community
-		originalNodes := fw.getOriginalNodes(result, parser, commID, len(result.Levels)-1)
-		nodeCount += len(originalNodes)
-		
+	// SOMEHOW SORT
+
+	// for id, nodes := range fw.mapping {
+	for id, nodes := range fw.mapping {
 		// Sort nodes for consistent output
-		sort.Strings(originalNodes)
+		sort.Strings(nodes)
 		
-		// Write community identifier
-		fmt.Fprintf(file, "c0_l%d_%d\n", len(result.Levels), commID)
-		fmt.Fprintf(file, "%d\n", len(originalNodes))
-		
-		// Write nodes
-		for _, node := range originalNodes {
+		// Write each community mapping
+		fmt.Fprintf(file, "%s\n", id)
+		fmt.Fprintf(file, "%d\n", len(nodes))
+		// Write the nodes in the community
+		for _, node := range nodes {
 			fmt.Fprintf(file, "%s\n", node)
 		}
 	}
-	
-	fmt.Printf("Total nodes written: %d\n", nodeCount)
+	 
 	return nil
 }
 
@@ -120,51 +210,20 @@ func (fw *FileWriter) WriteHierarchy(result *LouvainResult, parser *GraphParser,
 	}
 	defer file.Close()
 	
-	// Write hierarchy for each level (except the first)
-	for level := 1; level < len(result.Levels); level++ {
-		levelInfo := result.Levels[level]
+	// SOMEHOW SORT
+
+	for id, children := range fw.hierarchy {
+		// Sort children for consistent output
+		sort.Strings(children)
 		
-		// Get sorted community IDs
-		var communityIDs []int
-		for commID := range levelInfo.Communities {
-			communityIDs = append(communityIDs, commID)
-		}
-		sort.Ints(communityIDs)
-		
-		// Write each community and its sub-communities
-		for _, commID := range communityIDs {
-			nodes := levelInfo.Communities[commID]
-			
-			// Community identifier
-			fmt.Fprintf(file, "c0_l%d_%d\n", level+1, commID)
-			
-			// Find which communities from previous level are contained in this community
-			prevLevel := result.Levels[level-1]
-			subComms := make(map[int]bool)
-			
-			for _, node := range nodes {
-				// Find which community this node belonged to in previous level
-				if prevComm, exists := prevLevel.CommunityMap[node]; exists {
-					subComms[prevComm] = true
-				}
-			}
-			
-			// Write sub-communities count and IDs
-			fmt.Fprintf(file, "%d\n", len(subComms))
-			
-			// Write sorted sub-communities
-			var subCommIDs []int
-			for id := range subComms {
-				subCommIDs = append(subCommIDs, id)
-			}
-			sort.Ints(subCommIDs)
-			
-			for _, subCommID := range subCommIDs {
-				fmt.Fprintf(file, "%d\n", subCommID)
-			}
+		// Write each community and its children
+		fmt.Fprintf(file, "%s\n", id)
+		fmt.Fprintf(file, "%d\n", len(children))
+		for _, child := range children {
+			fmt.Fprintf(file, "%s\n", child)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -175,24 +234,14 @@ func (fw *FileWriter) WriteRoot(result *LouvainResult, parser *GraphParser, path
 		return err
 	}
 	defer file.Close()
-	
-	// Get top level communities
-	topLevel := result.Levels[len(result.Levels)-1]
-	
-	// Sort community IDs
-	var communityIDs []int
-	for commID := range topLevel.Communities {
-		communityIDs = append(communityIDs, commID)
-	}
-	sort.Ints(communityIDs)
-	
-	// Write root communities
-	for _, commID := range communityIDs {
-		fmt.Fprintf(file, "c0_l%d_%d\n", len(result.Levels), commID)
-	}
-	
+
+	// Write the root community ID
+	fmt.Fprintf(file, "%s\n", fw.rootID)
+
 	return nil
+	
 }
+
 
 // WriteEdges writes the edges between communities at each level
 func (fw *FileWriter) WriteEdges(result *LouvainResult, parser *GraphParser, path string) error {
@@ -202,38 +251,44 @@ func (fw *FileWriter) WriteEdges(result *LouvainResult, parser *GraphParser, pat
 	}
 	defer file.Close()
 	
-	// Write edges for each level
-	for level := 1; level <= len(result.Levels); level++ {
-		levelInfo := result.Levels[level-1]
+	// For each level, find edges between communities
+	for level := 0; level < len(result.Levels); level++ {
+		levelInfo := result.Levels[level]
 		
-		// Find edges between communities
+		if levelInfo.Graph == nil {
+			continue
+		}
+		
 		communityEdges := make(map[string]bool)
-		
-		// Use the graph from this level to find inter-community edges
 		graph := levelInfo.Graph
 		
-		// For each edge in the graph, check if it connects different communities
 		for i := 0; i < graph.NumNodes; i++ {
-			comm1 := levelInfo.CommunityMap[i]
+			comm1, exists1 := levelInfo.CommunityMap[i]
+			if !exists1 {
+				continue
+			}
 			
 			neighbors := graph.GetNeighbors(i)
 			for neighbor := range neighbors {
-				comm2 := levelInfo.CommunityMap[neighbor]
-				
-				if comm1 != comm2 {
-					// Create edge identifier (smaller ID first)
-					if comm1 < comm2 {
-						edgeID := fmt.Sprintf("c0_l%d_%d c0_l%d_%d", level, comm1, level, comm2)
-						communityEdges[edgeID] = true
-					} else {
-						edgeID := fmt.Sprintf("c0_l%d_%d c0_l%d_%d", level, comm2, level, comm1)
-						communityEdges[edgeID] = true
-					}
+				comm2, exists2 := levelInfo.CommunityMap[neighbor]
+				if !exists2 || comm1 == comm2 {
+					continue
 				}
+				
+				id1 := fmt.Sprintf("c0_l%d_%d", level, comm1)
+				id2 := fmt.Sprintf("c0_l%d_%d", level, comm2)
+				
+				var edgeID string
+				if id1 < id2 {
+					edgeID = fmt.Sprintf("%s %s", id1, id2)
+				} else {
+					edgeID = fmt.Sprintf("%s %s", id2, id1)
+				}
+				
+				communityEdges[edgeID] = true
 			}
 		}
 		
-		// Write sorted edges
 		var edges []string
 		for edge := range communityEdges {
 			edges = append(edges, edge)
@@ -246,99 +301,4 @@ func (fw *FileWriter) WriteEdges(result *LouvainResult, parser *GraphParser, pat
 	}
 	
 	return nil
-}
-
-// getOriginalNodes recursively gets all original nodes in a community, converting to original IDs
-func (fw *FileWriter) getOriginalNodes(result *LouvainResult, parser *GraphParser, commID int, level int) []string {
-	if level == 0 {
-		// Base case: convert normalized node IDs to original IDs
-		nodes := result.Levels[0].Communities[commID]
-		if nodes == nil {
-			return []string{}
-		}
-		
-		originalNodes := make([]string, 0, len(nodes))
-		for _, normalizedNode := range nodes {
-			if originalID, exists := parser.GetOriginalID(normalizedNode); exists {
-				originalNodes = append(originalNodes, originalID)
-			} else {
-				fmt.Printf("WARNING: Could not find original ID for normalized node %d\n", normalizedNode)
-			}
-		}
-		return originalNodes
-	}
-	
-	// Recursive case: get nodes from lower levels
-	var originalNodes []string
-	nodes := result.Levels[level].Communities[commID]
-
-	if nodes == nil {
-		fmt.Printf("Community %d does not exist at level %d\n", commID, level)
-		return []string{}
-	}
-
-	for _, node := range nodes {
-		// Find which community this node belonged to in the previous level
-		if prevComm, exists := result.Levels[level-1].CommunityMap[node]; exists {
-			subNodes := fw.getOriginalNodes(result, parser, prevComm, level-1)
-			originalNodes = append(originalNodes, subNodes...)
-		} else {
-			// This shouldn't happen in a well-formed hierarchy
-			fmt.Printf("WARNING: Node %d at level %d not found in previous level\n", node, level)
-		}
-	}
-	
-	return originalNodes
-}
-
-// WriteOriginalMapping writes a simple mapping file with original node IDs
-func (fw *FileWriter) WriteOriginalMapping(result *LouvainResult, parser *GraphParser, path string) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	
-	// Get final communities with original node IDs
-	finalCommunities := make(map[string]int)
-	for normalizedNode, community := range result.FinalCommunities {
-		if originalID, exists := parser.GetOriginalID(normalizedNode); exists {
-			finalCommunities[originalID] = community
-		}
-	}
-	
-	// Sort original node IDs for consistent output
-	var originalIDs []string
-	for originalID := range finalCommunities {
-		originalIDs = append(originalIDs, originalID)
-	}
-	
-	// Try to sort numerically if possible, otherwise lexicographically
-	if fw.allIDsAreIntegers(originalIDs) {
-		sort.Slice(originalIDs, func(i, j int) bool {
-			a, _ := strconv.Atoi(originalIDs[i])
-			b, _ := strconv.Atoi(originalIDs[j])
-			return a < b
-		})
-	} else {
-		sort.Strings(originalIDs)
-	}
-	
-	// Write mapping
-	for _, originalID := range originalIDs {
-		community := finalCommunities[originalID]
-		fmt.Fprintf(file, "%s %d\n", originalID, community)
-	}
-	
-	return nil
-}
-
-// allIDsAreIntegers checks if all IDs can be parsed as integers
-func (fw *FileWriter) allIDsAreIntegers(ids []string) bool {
-	for _, id := range ids {
-		if _, err := strconv.Atoi(id); err != nil {
-			return false
-		}
-	}
-	return true
 }

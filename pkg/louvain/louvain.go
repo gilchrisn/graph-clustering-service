@@ -72,10 +72,12 @@ func RunLouvain(graph *NormalizedGraph, config LouvainConfig) (*LouvainResult, e
 		}
 		
 		// Create super graph for next level
-		superGraph, communityMap, err := state.CreateSuperGraph()
+		superGraph, communityMap, superNodeToCommMap, err := state.CreateSuperGraph()
 		if err != nil {
 			return nil, fmt.Errorf("error creating super graph at level %d: %w", level, err)
 		}
+
+		result.Levels[level].SuperNodeToCommMap = superNodeToCommMap
 		
 		// Check if we've converged
 		if superGraph.NumNodes >= state.Graph.NumNodes {
@@ -441,13 +443,13 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 }
 // CreateSuperGraph creates a new graph where each community becomes a single super-node
 // This prepares the data structures for the next level of Louvain optimization
-func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, error) {
+func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[int]int, error) {
 	// Clean up any empty communities first
 	s.cleanupEmptyCommunities()
 	
 	// Validate current state
 	if err := s.ValidateState(); err != nil {
-		return nil, nil, fmt.Errorf("invalid state before creating super graph: %w", err)
+		return nil, nil, nil, fmt.Errorf("invalid state before creating super graph: %w", err)
 	}
 	
 	fmt.Printf("Creating super-graph from %d communities\n", len(s.C2N))
@@ -479,14 +481,14 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, erro
 	}
 	
 	if numSuperNodes == 0 {
-		return nil, nil, fmt.Errorf("no valid communities found")
+		return nil, nil, nil, fmt.Errorf("no valid communities found")
 	}
 	
 	// Verify all nodes have valid community assignments
 	for i := 0; i < s.Graph.NumNodes; i++ {
 		nodeComm := s.N2C[i]
 		if _, exists := commToNewIndex[nodeComm]; !exists {
-			return nil, nil, fmt.Errorf("node %d references invalid community %d", i, nodeComm)
+			return nil, nil, nil, fmt.Errorf("node %d references invalid community %d", i, nodeComm)
 		}
 	}
 	
@@ -509,7 +511,7 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, erro
 		
 		for _, originalNode := range originalNodes {
 			if originalNode < 0 || originalNode >= len(s.Graph.Weights) {
-				return nil, nil, fmt.Errorf("invalid original node index %d", originalNode)
+				return nil, nil, nil, fmt.Errorf("invalid original node index %d", originalNode)
 			}
 			totalWeight += s.Graph.Weights[originalNode]
 		}
@@ -536,7 +538,7 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, erro
 		commI := s.N2C[nodeI]
 		superNodeI, exists := commToNewIndex[commI]
 		if !exists {
-			return nil, nil, fmt.Errorf("node %d community %d not found in mapping", nodeI, commI)
+			return nil, nil, nil, fmt.Errorf("node %d community %d not found in mapping", nodeI, commI)
 		}
 		
 		// Get all neighbors of nodeI
@@ -547,7 +549,7 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, erro
 			commJ := s.N2C[nodeJ]
 			superNodeJ, exists := commToNewIndex[commJ]
 			if !exists {
-				return nil, nil, fmt.Errorf("neighbor %d community %d not found in mapping", nodeJ, commJ)
+				return nil, nil, nil, fmt.Errorf("neighbor %d community %d not found in mapping", nodeJ, commJ)
 			}
 			
 			// Create consistent edge key (smaller index first)
@@ -574,13 +576,13 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, erro
 		var fromSuperNode, toSuperNode int
 		n, err := fmt.Sscanf(edgeKey, "%d-%d", &fromSuperNode, &toSuperNode)
 		if n != 2 || err != nil {
-			return nil, nil, fmt.Errorf("failed to parse edge key %s: %w", edgeKey, err)
+			return nil, nil, nil, fmt.Errorf("failed to parse edge key %s: %w", edgeKey, err)
 		}
 		
 		// Validate super-node indices
 		if fromSuperNode < 0 || fromSuperNode >= numSuperNodes || 
 		   toSuperNode < 0 || toSuperNode >= numSuperNodes {
-			return nil, nil, fmt.Errorf("invalid super-node indices: %d-%d (max: %d)", 
+			return nil, nil, nil, fmt.Errorf("invalid super-node indices: %d-%d (max: %d)", 
 				fromSuperNode, toSuperNode, numSuperNodes-1)
 		}
 		
@@ -599,6 +601,12 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, erro
 	}
 	
 	fmt.Printf("Added %d edges to super-graph\n", edgeCount)
+
+	// Create reverse mapping: super-node index → community ID
+    superNodeToComm := make(map[int]int)
+    for oldCommID, superNodeIdx := range commToNewIndex {
+        superNodeToComm[superNodeIdx] = oldCommID
+    }
 	
 	// =============================================================================
 	// STEP 6: VALIDATE SUPER-GRAPH
@@ -606,13 +614,13 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, erro
 	// Ensure the super-graph is valid before returning
 	
 	if err := superGraph.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("created invalid super-graph: %w", err)
+		return nil, nil, nil, fmt.Errorf("created invalid super-graph: %w", err)
 	}
 	
 	fmt.Printf("Super-graph creation complete: %d nodes, %d edges\n", 
 		superGraph.NumNodes, edgeCount)
 	
-	return superGraph, communityMap, nil
+	return superGraph, communityMap, superNodeToComm, nil
 }
 
 // GetLevelInfo returns information about the current level

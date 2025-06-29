@@ -80,6 +80,7 @@ type LevelInfo struct {
 	Modularity     float64              `json:"modularity"`
 	NumCommunities int                  `json:"num_communities"`
 	NumMoves       int                  `json:"num_moves"`
+	SuperNodeToCommMap map[int]int 		`json:"super_node_to_comm_map,omitempty"` // For hierarchical levels
 }
 
 // LouvainStats contains statistics about the algorithm execution
