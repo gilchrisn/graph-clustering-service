@@ -170,6 +170,7 @@ type AggregationConfig struct {
 func DefaultAggregationConfig() AggregationConfig {
 	return AggregationConfig{
 		Strategy:      Count,
+		Interpretation: DirectTraversal,
 		Normalization: NoNormalization,
 		MinWeight:     0.0,
 		MaxEdges:      0,    // No limit

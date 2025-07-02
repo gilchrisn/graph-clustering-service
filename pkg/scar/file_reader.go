@@ -29,7 +29,6 @@ func (fr *FileReader) ReadProperties(filename string, n int64) ([]UintE, error) 
 	}
 	defer file.Close()
 
-	fmt.Printf("=== READING PROPERTIES FILE: %s ===\n", filename)
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
 	assignmentCount := 0
@@ -49,7 +48,7 @@ func (fr *FileReader) ReadProperties(filename string, n int64) ([]UintE, error) 
 			property, err2 := strconv.ParseInt(parts[1], 10, 32)
 			if err1 == nil && err2 == nil && nodeId < n {
 				properties[nodeId] = UintE(property)
-				fmt.Printf("Line %d: Node %d → property %d\n", lineNum, nodeId, property)
+				// fmt.Printf("Line %d: Node %d → property %d\n", lineNum, nodeId, property)
 				assignmentCount++
 			} else {
 				fmt.Printf("Line %d: %s (parse error or nodeId >= n: err1=%v, err2=%v, nodeId=%d, n=%d)\n", 
@@ -60,11 +59,11 @@ func (fr *FileReader) ReadProperties(filename string, n int64) ([]UintE, error) 
 		}
 	}
 	
-	fmt.Printf("Properties summary: %d assignments made\n", assignmentCount)
-	fmt.Println("Final property assignment:")
-	for i := int64(0); i < n; i++ {
-		fmt.Printf("Node %d: property %d\n", i, properties[i])
-	}
+	// fmt.Printf("Properties summary: %d assignments made\n", assignmentCount)
+	// fmt.Println("Final property assignment:")
+	// for i := int64(0); i < n; i++ {
+	// 	fmt.Printf("Node %d: property %d\n", i, properties[i])
+	// }
 	
 	return properties, scanner.Err()
 }
@@ -102,7 +101,7 @@ func (fr *FileReader) ReadPath(filename string) ([]UintE, int64, error) {
 		if label, err := strconv.ParseInt(line, 10, 32); err == nil {
 			if pathLength < 20 {
 				path[pathLength] = UintE(label)
-				fmt.Printf("Line %d: path[%d] = %d\n", lineNum, pathLength, label)
+				// fmt.Printf("Line %d: path[%d] = %d\n", lineNum, pathLength, label)
 				pathLength++
 			} else {
 				fmt.Printf("Line %d: %s (path too long, max 20)\n", lineNum, line)

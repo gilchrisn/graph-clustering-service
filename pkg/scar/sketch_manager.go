@@ -2,13 +2,14 @@ package scar
 
 import (
 	"fmt"
-	"math"
+	// "math"
 	// "math/rand"
 )
 // SketchManager manages all vertex sketches and provides operations
 type SketchManager struct {
 	vertexSketches map[int64]*VertexBottomKSketch
 	hashToNodeMap  map[uint32]int64
+	communitySketches map[int64]*VertexBottomKSketch // For community sketches
 	k              int64
 	nk             int64
 }
@@ -17,6 +18,7 @@ func NewSketchManager(k, nk int64) *SketchManager {
 	return &SketchManager{
 		vertexSketches: make(map[int64]*VertexBottomKSketch),
 		hashToNodeMap:  make(map[uint32]int64),
+		communitySketches: make(map[int64]*VertexBottomKSketch),
 		k:              k,
 		nk:             nk,
 	}
@@ -38,6 +40,16 @@ func (sm *SketchManager) CreateVertexSketch(nodeId int64, layerValues []uint32) 
 // GetVertexSketch returns the sketch for a vertex
 func (sm *SketchManager) GetVertexSketch(nodeId int64) *VertexBottomKSketch {
 	return sm.vertexSketches[nodeId]
+}
+
+// GetCommunitySketch returns the sketch for a community	
+func (sm *SketchManager) GetCommunitySketch(communityId int64) *VertexBottomKSketch {
+	return sm.communitySketches[communityId]
+}
+
+// DeleteCommunitySketch deletes the sketch for a community
+func (sm *SketchManager) DeleteCommunitySketch(commId int64) {
+	delete(sm.communitySketches, commId)
 }
 
 // UnionVertexSketch performs union operation on a vertex sketch
@@ -88,44 +100,41 @@ func (sm *SketchManager) CreateNodeToSketchMapping() map[int64][]uint32 {
 	return nodeToSketch
 }
 
-// updateForSuperGraph rebuilds sketch manager for super-graph nodes
-func (sm *SketchManager) updateForSuperGraph(newNodeToSketch map[int64][]uint32) {
-	fmt.Printf("=== UPDATING SKETCH MANAGER FOR SUPER-GRAPH ===\n")
+func (sm *SketchManager) UpdateCommunitySketch(commId int64, memberNodes []int64) {
+	communitySketch := NewVertexBottomKSketch(commId, sm.k, sm.nk)
 	
-	// Clear old mappings
-	oldVertexCount := len(sm.vertexSketches)
-	oldHashCount := len(sm.hashToNodeMap)
-	sm.vertexSketches = make(map[int64]*VertexBottomKSketch)
-	sm.hashToNodeMap = make(map[uint32]int64)
-	
-	// Rebuild with super-nodes
-	for superNodeId, sketchValues := range newNodeToSketch {
-		// Create new vertex sketch for super-node
-		superSketch := NewVertexBottomKSketch(superNodeId, sm.k, sm.nk)
-		
-		// Set first layer sketch values (using only layer 0 for simplicity)
-		if len(sketchValues) > 0 {
-			copyLen := len(sketchValues)
-			if copyLen > int(sm.k) {
-				copyLen = int(sm.k)
-			}
-			copy(superSketch.sketches[0], sketchValues[:copyLen])
-		}
-		
-		sm.vertexSketches[superNodeId] = superSketch
-		
-		// Rebuild hash mapping
-		for _, hashValue := range sketchValues {
-			if hashValue != math.MaxUint32 {
-				sm.hashToNodeMap[hashValue] = superNodeId
+	// Union all member node sketches
+	for _, nodeId := range memberNodes {
+		nodeSketch := sm.GetVertexSketch(nodeId)
+		if nodeSketch != nil {
+			for layer := int64(0); layer < sm.nk; layer++ {
+				communitySketch.UnionWithLayer(layer, nodeSketch.GetSketch(layer))
 			}
 		}
-		
-		fmt.Printf("SuperNode %d: sketch values %v\n", superNodeId, sketchValues[:min(len(sketchValues), 5)])
 	}
 	
-	fmt.Printf("Updated sketch manager: %d->%d vertices, %d->%d hash mappings\n", 
-		oldVertexCount, len(sm.vertexSketches), oldHashCount, len(sm.hashToNodeMap))
+	sm.communitySketches[commId] = communitySketch
+}
+
+func (sm *SketchManager) EstimateCommunityCardinality(commId int64, memberNodes []int64) float64 {
+	communitySketch := sm.GetCommunitySketch(commId)
+	if communitySketch == nil {
+		return 0.0
+	}
+	
+	if communitySketch.IsSketchFull() {
+		return communitySketch.EstimateCardinality()
+	} else {
+		// Sum degrees of all member nodes when sketch not full
+		totalDegree := 0.0
+		for _, nodeId := range memberNodes {
+			nodeSketch := sm.GetVertexSketch(nodeId)
+			if nodeSketch != nil {
+				totalDegree += nodeSketch.EstimateCardinality()
+			}
+		}
+		return totalDegree
+	}
 }
 
 func min(a, b int) int {

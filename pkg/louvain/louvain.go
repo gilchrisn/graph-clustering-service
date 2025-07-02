@@ -11,6 +11,17 @@ import (
 func RunLouvain(graph *NormalizedGraph, config LouvainConfig) (*LouvainResult, error) {
 	startTime := time.Now()
 	
+	//Print full graph structure
+	fmt.Println("Graph structure (edges):")
+	for i := 0; i < graph.NumNodes; i++ {
+		neighbors := graph.GetNeighbors(i)
+		fmt.Printf("Node %d: ", i)
+		for neighbor, weight := range neighbors {
+			fmt.Printf("(%d, %.2f) ", neighbor, weight)
+		}
+		fmt.Println()
+	}
+
 	// Validate input
 	if err := graph.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid graph: %w", err)
@@ -199,7 +210,7 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 	nbMoves := 0
 	s.Iteration = 0
 
-	fmt.Printf("Starting Louvain level with %d nodes, initial modularity: %.4f\n",
+	fmt.Printf("\n\n\nStarting Louvain level with %d nodes, initial modularity: %.4f\n",
 		s.Graph.NumNodes, s.GetModularity())
 
 	// ==============================================================================================
@@ -297,6 +308,8 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 		}
 
 		if bestComm != oldComm && bestGain > s.Config.MinModularity {
+			fmt.Printf("Node %d: moving from community %d to %d (gain: %.4f)\n",
+				node, oldComm, bestComm, bestGain)
 			s.removeNodeFromCommunity(node, oldComm)
 			s.insertNodeIntoCommunity(node, bestComm)
 			moves++
@@ -430,17 +443,31 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 		return 0.0
 	}
 
-	oldModularity := s.GetModularity()
+	// Calculate edgesToTo (edges from node to target community)
+	edgesToTo := k_i_in  // This is passed as parameter
 
-	s.removeNodeFromCommunity(node, currentComm)
-	s.insertNodeIntoCommunity(node, targetComm)
+	// Get other variables
+	nodeDegree := s.Graph.GetNodeDegree(node)
+	toCommDegree := 0.0
+	if targetComm >= 0 {
+		if tot, exists := s.Tot[targetComm]; exists {
+			toCommDegree = tot
+		}
+	}
+	wholeWeight := s.Graph.TotalWeight
 
-	newModularity := s.GetModularity()
-	s.removeNodeFromCommunity(node, targetComm)
-	s.insertNodeIntoCommunity(node, currentComm)
-	
-	return newModularity - oldModularity
+
+	// Print all component for debugging
+	fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
+		" toCommDegree: %.4f, wholeWeight: %.4f\n",
+		node, targetComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight)
+
+	// Apply your formula
+	gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
+
+	return gain
 }
+
 // CreateSuperGraph creates a new graph where each community becomes a single super-node
 // This prepares the data structures for the next level of Louvain optimization
 func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[int]int, error) {
@@ -745,3 +772,5 @@ func (s *LouvainState) cleanupEmptyCommunities() {
         }
     }
 }
+
+

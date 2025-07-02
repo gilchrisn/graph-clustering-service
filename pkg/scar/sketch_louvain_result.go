@@ -1,0 +1,369 @@
+// sketch_louvain_result.go - COMPLETE REWRITE
+
+package scar
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"math"
+)
+
+// LevelResult stores the result data for a single level
+type LevelResult struct {
+	partition        []int64                          // partition[nodeId] = communityId
+	sketches         map[int64]*VertexBottomKSketch  // sketches[nodeId] = sketch
+	hashMap          map[uint32]int64                // hashMap[hash] = nodeId
+	communityToNodes map[int64][]int64               // community -> member nodes
+	commToNewNode    map[int64]int64                 // old community -> new super-node
+}
+
+// SketchLouvainResult stores the complete hierarchical clustering result
+type SketchLouvainResult struct {
+	levels    []LevelResult         // levels[i] = result for level i
+	hierarchy map[string][]string   // community ID -> children community IDs
+	mapping   map[string][]int64    // community ID -> original nodes
+	rootID    string                // root community ID
+}
+
+// NewSketchLouvainResult creates a new hierarchical result
+func NewSketchLouvainResult() *SketchLouvainResult {
+	return &SketchLouvainResult{
+		levels: make([]LevelResult, 0),
+	}
+}
+
+// AddLevel adds a new level to the hierarchical result
+func (slr *SketchLouvainResult) AddLevel(
+	partition []int64,
+	sketches map[int64]*VertexBottomKSketch,
+	hashMap map[uint32]int64,
+	communityToNodes map[int64][]int64,
+	commToNewNode map[int64]int64,
+) {
+	// Make copies to avoid reference issues
+	partitionCopy := make([]int64, len(partition))
+	copy(partitionCopy, partition)
+	
+	sketchesCopy := make(map[int64]*VertexBottomKSketch)
+	for nodeId, sketch := range sketches {
+		sketchesCopy[nodeId] = sketch
+	}
+	
+	hashMapCopy := make(map[uint32]int64)
+	for hash, nodeId := range hashMap {
+		hashMapCopy[hash] = nodeId
+	}
+	
+	communityToNodesCopy := make(map[int64][]int64)
+	for commId, nodes := range communityToNodes {
+		nodesCopy := make([]int64, len(nodes))
+		copy(nodesCopy, nodes)
+		communityToNodesCopy[commId] = nodesCopy
+	}
+	
+	commToNewNodeCopy := make(map[int64]int64)
+	for oldComm, newNode := range commToNewNode {
+		commToNewNodeCopy[oldComm] = newNode
+	}
+	
+	levelResult := LevelResult{
+		partition:        partitionCopy,
+		sketches:         sketchesCopy,
+		hashMap:          hashMapCopy,
+		communityToNodes: communityToNodesCopy,
+		commToNewNode:    commToNewNodeCopy,
+	}
+	
+	slr.levels = append(slr.levels, levelResult)
+	
+	fmt.Printf("Added level %d with %d nodes, %d communities\n", 
+		len(slr.levels)-1, len(partition), len(communityToNodes))
+}
+
+// BuildHierarchy builds the hierarchy and mapping structures from stored data
+func (slr *SketchLouvainResult) BuildHierarchy() {
+	slr.hierarchy = make(map[string][]string)
+	slr.mapping = make(map[string][]int64)
+	
+	for level := 0; level < len(slr.levels); level++ {
+		if level == 0 {
+			// Level 0: map communities to original nodes
+			for commID, nodes := range slr.levels[level].communityToNodes {
+				formattedID := fmt.Sprintf("c0_l%d_%d", level+1, commID)
+				slr.mapping[formattedID] = make([]int64, len(nodes))
+				copy(slr.mapping[formattedID], nodes)
+			}
+		} else {
+			// Level N: map communities to child communities using stored mappings
+			for commID, superNodes := range slr.levels[level].communityToNodes {
+				formattedID := fmt.Sprintf("c0_l%d_%d", level+1, commID)
+				slr.mapping[formattedID] = []int64{}
+				slr.hierarchy[formattedID] = []string{}
+				
+				// Use the stored commToNewNode mapping from previous level
+				prevLevelMapping := slr.levels[level-1].commToNewNode
+				
+				for _, superNode := range superNodes {
+					// Find which old community this super-node came from
+					for oldComm, newNode := range prevLevelMapping {
+						if newNode == superNode {
+							formattedChildID := fmt.Sprintf("c0_l%d_%d", level, oldComm)
+							slr.hierarchy[formattedID] = append(slr.hierarchy[formattedID], formattedChildID)
+							if childMapping, exists := slr.mapping[formattedChildID]; exists {
+								slr.mapping[formattedID] = append(slr.mapping[formattedID], childMapping...)
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	// Determine root ID
+	if len(slr.levels) > 0 {
+		lastLevel := len(slr.levels) - 1
+		lastLevelCommunities := slr.levels[lastLevel].communityToNodes
+		
+		if len(lastLevelCommunities) > 1 {
+			// Multiple communities at top level - create virtual root
+			slr.rootID = fmt.Sprintf("c0_l%d_0", len(slr.levels)+1)
+			slr.hierarchy[slr.rootID] = []string{}
+			slr.mapping[slr.rootID] = []int64{}
+			
+			for commID := range lastLevelCommunities {
+				formattedID := fmt.Sprintf("c0_l%d_%d", lastLevel+1, commID)
+				slr.hierarchy[slr.rootID] = append(slr.hierarchy[slr.rootID], formattedID)
+				if nodes, exists := slr.mapping[formattedID]; exists {
+					slr.mapping[slr.rootID] = append(slr.mapping[slr.rootID], nodes...)
+				}
+			}
+		} else {
+			// Single community at top level
+			for commID := range lastLevelCommunities {
+				slr.rootID = fmt.Sprintf("c0_l%d_%d", lastLevel+1, commID)
+				break
+			}
+		}
+	} else {
+		slr.rootID = "c0_l1_0" // Default root
+	}
+}
+
+// WriteFiles writes the hierarchical result to output files
+func (slr *SketchLouvainResult) WriteFiles(config SCARConfig) error {
+	fmt.Println("\n=== WRITING HIERARCHICAL RESULT FILES ===")
+	
+	// Build the hierarchy structures first
+	slr.BuildHierarchy()
+	
+	// SCAR HIERARCHY + SKETCH MODE: Write all hierarchy files + .sketch
+	fmt.Println("SCAR sketch output mode: writing hierarchy files + .sketch file")
+	
+	if err := slr.writeMappingFile(config); err != nil {
+		return fmt.Errorf("failed to write mapping file: %v", err)
+	}
+	
+	if err := slr.writeHierarchyFile(config); err != nil {
+		return fmt.Errorf("failed to write hierarchy file: %v", err)
+	}
+	
+	if err := slr.writeRootFile(config); err != nil {
+		return fmt.Errorf("failed to write root file: %v", err)
+	}
+	
+	if config.SketchOutput {
+		if err := slr.writeSketchFile(config); err != nil {
+			return fmt.Errorf("failed to write sketch file: %v", err)
+		}
+	}
+	fmt.Println("Output files written successfully")
+	return nil
+}
+
+
+// getFinalPartitionToOriginalNodes reconstructs the final partition mapped to original nodes
+func (slr *SketchLouvainResult) getFinalPartitionToOriginalNodes() []int64 {
+	if len(slr.levels) == 0 {
+		return []int64{}
+	}
+	
+	if len(slr.levels) == 1 {
+		// No hierarchy - return the single level partition
+		return slr.levels[0].partition
+	}
+	
+	// Use the mapping we built to get original nodes for final communities
+	finalPartition := make([]int64, len(slr.levels[0].partition))
+	
+	// Get final level communities
+	finalLevel := len(slr.levels) - 1
+	finalCommunityAssignment := int64(0)
+	
+	for commID := range slr.levels[finalLevel].communityToNodes {
+		formattedID := fmt.Sprintf("c0_l%d_%d", finalLevel+1, commID)
+		if originalNodes, exists := slr.mapping[formattedID]; exists {
+			for _, originalNode := range originalNodes {
+				finalPartition[originalNode] = finalCommunityAssignment
+			}
+		}
+		finalCommunityAssignment++
+	}
+	
+	return finalPartition
+}
+
+// writeMappingFile writes the mapping from communities to original nodes
+func (slr *SketchLouvainResult) writeMappingFile(config SCARConfig) error {
+	filename := fmt.Sprintf("%s_mapping.dat", config.Prefix)
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	
+	fmt.Printf("Writing mapping file: %s\n", filename)
+	
+	// Sort community IDs for consistent output
+	var communityIDs []string
+	for id := range slr.mapping {
+		communityIDs = append(communityIDs, id)
+	}
+	sort.Strings(communityIDs)
+	
+	for _, id := range communityIDs {
+		nodes := slr.mapping[id]
+		// Sort nodes for consistent output
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i] < nodes[j] })
+		
+		// Write community mapping
+		fmt.Fprintf(file, "%s\n", id)
+		fmt.Fprintf(file, "%d\n", len(nodes))
+		for _, node := range nodes {
+			fmt.Fprintf(file, "%d\n", node)
+		}
+	}
+	
+	return nil
+}
+
+// writeHierarchyFile writes the hierarchical community structure
+func (slr *SketchLouvainResult) writeHierarchyFile(config SCARConfig) error {
+	filename := fmt.Sprintf("%s_hierarchy.dat", config.Prefix)
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	
+	fmt.Printf("Writing hierarchy file: %s\n", filename)
+	
+	// Sort community IDs for consistent output  
+	var communityIDs []string
+	for id := range slr.hierarchy {
+		communityIDs = append(communityIDs, id)
+	}
+	sort.Strings(communityIDs)
+	
+	for _, id := range communityIDs {
+		children := slr.hierarchy[id]
+		// Sort children for consistent output
+		sort.Strings(children)
+		
+		// Write community hierarchy
+		fmt.Fprintf(file, "%s\n", id)
+		fmt.Fprintf(file, "%d\n", len(children))
+		for _, child := range children {
+			fmt.Fprintf(file, "%s\n", child)
+		}
+	}
+	
+	return nil
+}
+
+// writeRootFile writes the root community identifier
+func (slr *SketchLouvainResult) writeRootFile(config SCARConfig) error {
+	filename := fmt.Sprintf("%s_root.dat", config.Prefix)
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	
+	fmt.Printf("Writing root file: %s\n", filename)
+	
+	// Write the root community ID
+	fmt.Fprintf(file, "%s\n", slr.rootID)
+	
+	return nil
+}
+
+// writeSketchFile writes the sketch data for all levels
+func (slr *SketchLouvainResult) writeSketchFile(config SCARConfig) error {
+	filename := fmt.Sprintf("%s.sketch", config.Prefix)
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	
+	fmt.Printf("Writing sketch file: %s\n", filename)
+	
+	// Write header with parameters
+	fmt.Fprintf(file, "k=%d nk=%d th=%.3f pro=%s path=%s\n", 
+		config.K, config.NK, config.Threshold, 
+		filepath.Base(config.PropertyFile), filepath.Base(config.PathFile))
+	
+	// Write sketches for all levels
+	for level, levelResult := range slr.levels {
+		fmt.Printf("Writing sketches for level %d\n", level)
+		
+		// Sort node IDs for consistent output
+		var nodeIDs []int64
+		for nodeId := range levelResult.sketches {
+			nodeIDs = append(nodeIDs, nodeId)
+		}
+		sort.Slice(nodeIDs, func(i, j int) bool { return nodeIDs[i] < nodeIDs[j] })
+		
+		for _, nodeId := range nodeIDs {
+			sketch := levelResult.sketches[nodeId]
+			if sketch != nil {
+				slr.writeNodeSketch(file, nodeId, level, sketch, config.NK)
+			}
+		}
+	}
+	
+	return nil
+}
+
+// writeNodeSketch writes a single node's sketch to file
+func (slr *SketchLouvainResult) writeNodeSketch(
+	file *os.File,
+	nodeId int64,
+	level int,
+	sketch *VertexBottomKSketch,
+	nk int64,
+) {
+	fmt.Fprintf(file, "%d level=%d\n", nodeId, level)
+	
+	// Write sketch layers
+	for layer := int64(0); layer < nk; layer++ {
+		layerSketch := sketch.GetSketch(layer)
+		var sketchStrs []string
+		
+		for _, val := range layerSketch {
+			if val != math.MaxUint32 {
+				sketchStrs = append(sketchStrs, fmt.Sprintf("%d", val))
+			}
+		}
+		
+		if len(sketchStrs) > 0 {
+			fmt.Fprintf(file, "%s\n", strings.Join(sketchStrs, ","))
+		} else {
+			fmt.Fprintf(file, "\n") // Empty line for empty sketch
+		}
+	}
+}

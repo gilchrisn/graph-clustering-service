@@ -60,6 +60,12 @@ func (p *GraphParser) ParseEdgeList(filename string) (*ParseResult, error) {
 		
 		from := parts[0]
 		to := parts[1]
+		
+		// Skip self-loops
+		if from == to {
+			continue
+		}
+		
 		nodeSet[from] = true
 		nodeSet[to] = true
 	}
@@ -92,8 +98,13 @@ func (p *GraphParser) ParseEdgeList(filename string) (*ParseResult, error) {
 		
 		from := parts[0]
 		to := parts[1]
-		weight := 1.0
 		
+		// Skip self-loops
+		if from == to {
+			continue
+		}
+		
+		weight := 1.0
 		if len(parts) >= 3 {
 			if w, err := strconv.ParseFloat(parts[2], 64); err == nil {
 				weight = w

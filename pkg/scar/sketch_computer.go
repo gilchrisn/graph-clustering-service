@@ -152,30 +152,30 @@ func (sc *SketchComputer) printSketchState(sketches []UintE, n, k, nk, currentIt
 			}
 		}
 		
-		if hasNonMax {
-			fmt.Printf("Node %d sketches: ", i)
-			for j := int64(0); j < nk; j++ {
-				fmt.Printf("layer%d=[", j)
-				for ki := int64(0); ki < k; ki++ {
-					idx := j*n*k + i*k + ki + currentIter*n*k*nk
-					if int64(idx) < int64(len(sketches)) {
-						val := sketches[idx]
-						if val == math.MaxUint32 {
-							fmt.Printf("MAX")
-						} else {
-							fmt.Printf("%d", val)
-						}
-					} else {
-						fmt.Printf("OOB")
-					}
-					if ki < k-1 {
-						fmt.Printf(",")
-					}
-				}
-				fmt.Printf("] ")
-			}
-			fmt.Printf("\n")
-		}
+		// if hasNonMax {
+		// 	fmt.Printf("Node %d sketches: ", i)
+		// 	for j := int64(0); j < nk; j++ {
+		// 		fmt.Printf("layer%d=[", j)
+		// 		for ki := int64(0); ki < k; ki++ {
+		// 			idx := j*n*k + i*k + ki + currentIter*n*k*nk
+		// 			if int64(idx) < int64(len(sketches)) {
+		// 				val := sketches[idx]
+		// 				if val == math.MaxUint32 {
+		// 					fmt.Printf("MAX")
+		// 				} else {
+		// 					fmt.Printf("%d", val)
+		// 				}
+		// 			} else {
+		// 				fmt.Printf("OOB")
+		// 			}
+		// 			if ki < k-1 {
+		// 				fmt.Printf(",")
+		// 			}
+		// 		}
+		// 		fmt.Printf("] ")
+		// 	}
+		// 	fmt.Printf("\n")
+		// }
 	}
 }
 
@@ -189,20 +189,17 @@ func (sc *SketchComputer) initializeFrontier(
 ) []bool {
 	frontier := make([]bool, n)
 	
-	fmt.Println("=== SKETCH INITIALIZATION ===")
-	fmt.Printf("First label: %d\n", firstLabel)
 	
 	for i := int64(0); i < n; i++ {
 		if vertexProperties[i] == firstLabel {
-			fmt.Printf("Node %d (property=%d) gets sketches: ", i, vertexProperties[i])
 			for j := int64(0); j < nk; j++ {
-				uniformValue := uint32(1000000 + i*1000 + j) // deterministic for testing
+				uniformValue := sc.rng.Uint32()
+				// uniformValue := uint32(1000000 + i*1000 + j) // deterministic for testing
 				if uniformValue == math.MaxUint32 {
 					uniformValue--
 				}
 				sketches[j*n*k+i*k] = uniformValue
 				nodeHashValue[i*nk+j] = uniformValue + 1
-				fmt.Printf("layer%d=%d ", j, uniformValue)
 				frontier[i] = true
 			}
 			fmt.Printf("\n")
@@ -210,7 +207,6 @@ func (sc *SketchComputer) initializeFrontier(
 	}
 	
 	// Print complete initial sketch state
-	fmt.Println("\nInitial sketch state:")
 	for i := int64(0); i < n; i++ {
 		if frontier[i] {
 			fmt.Printf("Node %d sketches: ", i)

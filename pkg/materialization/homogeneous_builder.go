@@ -94,6 +94,8 @@ func (hb *HomogeneousBuilder) Build() (*HomogeneousGraph, AggregationStats) {
 	hb.updateWeightDistribution(homogGraph)
 	
 	fmt.Printf("Homogeneous graph built with %d nodes and %d edges\n", len(homogGraph.Nodes), len(homogGraph.Edges))
+	// Print the full graph structure
+	
 	return homogGraph, hb.stats
 }
 
