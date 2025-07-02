@@ -24,8 +24,6 @@ func NewSketchLouvainState(n int64, sketchManager *SketchManager) *SketchLouvain
 		n:                 n,
 	}
 
-	sls.CalculateWholeWeight()
-
 	return sls
 }
 
@@ -130,6 +128,7 @@ func (sls *SketchLouvainState) GetAllCommunitySketches() map[int64]*VertexBottom
 func (sls *SketchLouvainState) CalculateWholeWeight() {
 	// Calculate the total weight of the graph based on the community sketches
 	totalWeight := 0.0
+
 	for _, sketch := range sls.sketchManager.vertexSketches {
 		totalWeight += sketch.EstimateCardinality()
 	}

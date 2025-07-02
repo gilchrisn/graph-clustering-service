@@ -44,6 +44,25 @@ func (vbs *VertexBottomKSketch) Initialize(layerValues []uint32) {
 	}
 }
 
+// SetCompleteSketch sets the complete sketch data for all layers
+func (vbs *VertexBottomKSketch) SetCompleteSketch(allSketchData [][]uint32) {
+    if len(allSketchData) != int(vbs.nk) {
+        panic("allSketchData length must equal nk")
+    }
+    
+    for layer := int64(0); layer < vbs.nk; layer++ {
+        if len(allSketchData[layer]) != int(vbs.k) {
+            panic("layer sketch length must equal k")
+        }
+        
+        // Copy the layer data
+        copy(vbs.sketches[layer], allSketchData[layer])
+    }
+    
+    // Auto-update filled count
+    vbs.UpdateFilledCount()
+}
+
 // GetFilledCount returns the total filled count across all layers
 func (vbs *VertexBottomKSketch) GetFilledCount() int64 {
 	return vbs.filledCount
@@ -70,6 +89,25 @@ func (vbs *VertexBottomKSketch) GetAllSketches() []uint32 {
 	return result
 }
 
+func (vbs *VertexBottomKSketch) InsertNodeSketch(nodeId int64, sketch []uint32) {
+	if nodeId != vbs.nodeId {
+		fmt.Printf("Warning: Node ID mismatch in InsertNodeSketch: %d vs %d\n", nodeId, vbs.nodeId)
+		return
+	}
+	
+	if len(sketch) != int(vbs.k) {
+		fmt.Printf("Warning: Sketch length mismatch in InsertNodeSketch: %d vs %d\n", len(sketch), vbs.k)
+		return
+	}
+	
+	for i := int64(0); i < vbs.k; i++ {
+		if sketch[i] < vbs.sketches[0][i] {
+			vbs.sketches[0][i] = sketch[i]
+		}
+	}
+	vbs.UpdateFilledCount()
+}
+
 // Union performs Bottom-K union with another sketch layer
 func (vbs *VertexBottomKSketch) UnionWithLayer(layer int64, otherSketch []uint32) {
 	if layer >= vbs.nk {
@@ -78,7 +116,7 @@ func (vbs *VertexBottomKSketch) UnionWithLayer(layer int64, otherSketch []uint32
 	
 	currentSketch := vbs.sketches[layer]
 	vbs.sketches[layer] = vbs.bottomKUnion(currentSketch, otherSketch)
-	vbs.updateFilledCount()
+	vbs.UpdateFilledCount()
 }
 
 // bottomKUnion performs Bottom-K union of two sketches
@@ -152,7 +190,7 @@ func (vbs *VertexBottomKSketch) AddOne() {
 			}
 		}
 	}
-	vbs.updateFilledCount()
+	vbs.UpdateFilledCount()
 }
 
 // String returns a string representation for debugging
@@ -192,8 +230,8 @@ func (vbs *VertexBottomKSketch) ContainsHash(targetHash uint32) bool {
 }
 
 
-// updateFilledCount updates the filled count
-func (vbs *VertexBottomKSketch) updateFilledCount() {
+// UpdateFilledCount updates the filled count
+func (vbs *VertexBottomKSketch) UpdateFilledCount() {
 	count := int64(0)
 	for i := int64(0); i < vbs.k; i++ {
 		if vbs.sketches[0][i] != math.MaxUint32 {
@@ -251,6 +289,6 @@ func (vbs *VertexBottomKSketch) UnionWith(other *VertexBottomKSketch) *VertexBot
 	for layer := int64(0); layer < vbs.nk; layer++ {
 		unionSketch.sketches[layer] = vbs.bottomKUnion(vbs.sketches[layer], other.sketches[layer])
 	}
-	unionSketch.updateFilledCount()
+	unionSketch.UpdateFilledCount()
 	return unionSketch
 }	

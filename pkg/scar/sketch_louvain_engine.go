@@ -23,13 +23,14 @@ func NewSketchLouvainEngine(config SCARConfig) *SketchLouvainEngine {
 // RunLouvain executes the sketch-based Louvain algorithm
 func (sle *SketchLouvainEngine) RunLouvain() error {
 	fmt.Println("Start reading graph")
-	
+	return nil
 	// Phase 1: Initialize graph, sketches and result
 	err := sle.initializeGraphAndSketches()
+
 	if err != nil {
 		return err
 	}
-	
+
 	// Phase 2: Run Louvain algorithm
 	startTime := time.Now()
 
@@ -78,7 +79,7 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 					}
 					
 					// Calculate modularity gain using sketch-based estimation
-					gain := sle.calculateModularityGain(nodeId, currentCommunity, neighborComm)
+					gain := sle.calculateModularityGain(nodeId, neighborComm)
 
 					if gain > bestGain {
 						bestGain = gain
@@ -180,7 +181,19 @@ func (sle *SketchLouvainEngine) initializeGraphAndSketches() error {
 	// Initialize community manager
 	sle.sketchLouvainState = NewSketchLouvainState(sle.graph.n, newSketchManager)
 
-	// Print final sketch stateInitialize communities (each node in its own community)
+	// Print final sketch state
+	fmt.Println("Here are the vertex sketches and their cardinalities:")
+	for i := int64(0); i < n; i++ {
+		if nodeHashValue[i*sle.config.NK] != 0 {
+			if sketch := sle.sketchLouvainState.GetVertexSketch(i); sketch != nil {
+				fmt.Printf("Vertex %d: %s\n", i, sketch.String())
+				fmt.Printf("  Estimated cardinality: %.4f\n", sketch.EstimateCardinality())
+			}
+		}
+	}
+	fmt.Println()
+
+	// Initialize communities (each node in its own community)
 	for nodeId := int64(0); nodeId < n; nodeId++ {
 		// Skip nodes without sketches
 		if sle.sketchLouvainState.GetVertexSketch(nodeId) == nil {
@@ -197,6 +210,8 @@ func (sle *SketchLouvainEngine) initializeGraphAndSketches() error {
 		sle.sketchLouvainState.sketchManager.UpdateCommunitySketch(nodeId, []int64{nodeId})
 	}
 	
+	sle.sketchLouvainState.CalculateWholeWeight()
+
 	sle.result = NewSketchLouvainResult()
 
 	// Print final sketch state
@@ -219,16 +234,11 @@ func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeH
 
 	for i := int64(0); i < n; i++ {
 		if nodeHashValue[i*sle.config.NK] != 0 {
-			// Extract layer values for hash mapping
-			layerValues := make([]uint32, sle.config.NK)
-			for j := int64(0); j < sle.config.NK; j++ {
-				layerValues[j] = nodeHashValue[i*sle.config.NK+j] - 1 // Remove the +1 added during initialization
-			}
-			
 			// Create vertex sketch
 			sketch := NewVertexBottomKSketch(i, sle.config.K, sle.config.NK)
 			
-			// Fill sketch data from flat array
+			// Prepare all sketch data at once
+			allSketchData := make([][]uint32, sle.config.NK)
 			for j := int64(0); j < sle.config.NK; j++ {
 				layerSketch := make([]uint32, sle.config.K)
 				for ki := int64(0); ki < sle.config.K; ki++ {
@@ -239,10 +249,11 @@ func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeH
 						layerSketch[ki] = math.MaxUint32
 					}
 				}
-				sketch.sketches[j] = layerSketch
+				allSketchData[j] = layerSketch
 			}
 			
-			newSketchManager.vertexSketches[i] = sketch
+			// Set it all at once
+			sketch.SetCompleteSketch(allSketchData)
 			
 			// Build hash to node mapping
 			for j := int64(0); j < sle.config.NK; j++ {
@@ -285,9 +296,12 @@ func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeH
 				sketch.sketches[j] = cleanedSketch
 			}
 
+			sketch.UpdateFilledCount()
+
+			fmt.Println("Created sketch for node", i, ":", sketch.String())
+			newSketchManager.vertexSketches[i] = sketch
 		}
 	}
-
 	return newSketchManager
 }
 
@@ -334,7 +348,7 @@ func (sle *SketchLouvainEngine) findNeighboringCommunities(
 
 // calculateModularityGain calculates modularity gain for moving a node
 func (sle *SketchLouvainEngine) calculateModularityGain(
-	nodeId, fromComm, toComm int64,
+	nodeId, toComm int64,
 ) float64 {
 	sketch := sle.sketchLouvainState.GetVertexSketch(nodeId)
 	if sketch == nil {
