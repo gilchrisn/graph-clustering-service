@@ -2,28 +2,27 @@ package scar
 
 import (
 	"fmt"
-	"time"
 	"math"
+	"time"
 )
 
 // SketchLouvainEngine implements Louvain algorithm with sketch-based operations
 type SketchLouvainEngine struct {
-	sketchLouvainState *SketchLouvainState 
-	graph         *GraphStructure
-	config        SCARConfig
-	result       *SketchLouvainResult
+	sketchLouvainState *SketchLouvainState
+	graph              *GraphStructure
+	config             SCARConfig
+	result             *SketchLouvainResult
 }
 
 func NewSketchLouvainEngine(config SCARConfig) *SketchLouvainEngine {
 	return &SketchLouvainEngine{
-		config:        config,
+		config: config,
 	}
 }
 
 // RunLouvain executes the sketch-based Louvain algorithm
 func (sle *SketchLouvainEngine) RunLouvain() error {
-	fmt.Println("Start reading graph")
-	return nil
+
 	// Phase 1: Initialize graph, sketches and result
 	err := sle.initializeGraphAndSketches()
 
@@ -37,7 +36,7 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 	// Run Louvain phases
 	totalImprovement := true
 	phase := 0
-	
+
 	for totalImprovement && phase < 10 {
 		fmt.Printf("=== Louvain Phase %d ===\n", phase)
 
@@ -45,39 +44,39 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 		totalImprovement = false
 		improvement := true
 		localIter := 0
-		
-		for improvement && localIter < 100 {
+
+		for improvement && localIter < 10 {
 			improvement = false
 			nodesProcessed := 0
 			nodesMoved := 0
-			
+
 			// For each node, try to move to best neighboring community
 			for nodeId := int64(0); nodeId < sle.sketchLouvainState.n; nodeId++ {
 				// Skip nodes without sketches
 				if sle.sketchLouvainState.GetVertexSketch(nodeId) == nil {
 					continue
 				}
-				
+
 				nodesProcessed++
-				
+
 				currentCommunity := sle.sketchLouvainState.GetNodeCommunity(nodeId)
-				
+
 				// Find neighboring communities through sketch similarity
 				neighborCommunities := sle.findNeighboringCommunities(nodeId)
-				
+
 				if len(neighborCommunities) == 0 {
 					continue
 				}
-				
+
 				// Calculate gain for moving to each neighboring community
 				bestCommunity := currentCommunity
 				bestGain := 0.0
-				
+
 				for neighborComm := range neighborCommunities {
 					if neighborComm == currentCommunity {
 						continue
 					}
-					
+
 					// Calculate modularity gain using sketch-based estimation
 					gain := sle.calculateModularityGain(nodeId, neighborComm)
 
@@ -86,7 +85,7 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 						bestCommunity = neighborComm
 					}
 				}
-				
+
 				// Move node if beneficial
 				if bestCommunity != currentCommunity {
 					fmt.Printf("Node %d: moving from community %d to %d (gain: %f)\n", nodeId, currentCommunity, bestCommunity, bestGain)
@@ -96,33 +95,31 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 					nodesMoved++
 				}
 			}
-			
+
 			localIter++
 			fmt.Printf("Local iter %d: %d nodes processed, %d moved\n", localIter, nodesProcessed, nodesMoved)
 		}
-		
+
 		fmt.Printf("\n=== HIERARCHY LEVEL %d END ===\n", phase)
 		fmt.Printf("Total improvement achieved: %t\n", totalImprovement)
 
 		fmt.Printf("Phase %d: Improvement %t\n", phase, improvement)
 
-		
-		
 		// Phase 2: Community aggregation (create super-graph)
 		sle.aggregateCommunities()
-		
+
 		if !totalImprovement {
 			break
 		}
 
 		phase++
 	}
-	
+
 	fmt.Printf("Louvain completed in %v\n", time.Since(startTime))
 	fmt.Printf("Total hierarchy levels: %d\n", phase)
 
 
-	return nil
+	return sle.result.WriteFiles(sle.config)
 }
 
 // initializeGraphAndSketches reads graph and computes initial sketches
@@ -134,47 +131,47 @@ func (sle *SketchLouvainEngine) initializeGraphAndSketches() error {
 		return err
 	}
 	sle.graph = graph
-	
+
 	n := graph.n
 	pathLength := int64(10)
-	
+
 	// Initialize flat sketch arrays (for compatibility with existing sketch computation)
 	oldSketches := make([]uint32, pathLength*n*sle.config.K*sle.config.NK)
 	for i := range oldSketches {
 		oldSketches[i] = math.MaxUint32
 	}
-	
+
 	nodeHashValue := make([]uint32, n*sle.config.NK)
-	
+
 	// Read properties and path
 	fileReader := NewFileReader()
 	fmt.Printf("About to read properties from: '%s'\n", sle.config.PropertyFile)
 	fmt.Printf("About to read path from: '%s'\n", sle.config.PathFile)
-	
+
 	vertexProperties, err := fileReader.ReadProperties(sle.config.PropertyFile, n)
 	if err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
-	
+
 	path, actualPathLength, err := fileReader.ReadPath(sle.config.PathFile)
 	if err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
 	pathLength = actualPathLength
-	
+
 	// Compute sketches using existing logic
 	sketchComputer := NewSketchComputer()
 	sketchComputer.ComputeForGraph(graph, oldSketches, path, pathLength, vertexProperties, nodeHashValue, sle.config.K, sle.config.NK)
-	
+
 	sketches := oldSketches[(pathLength-1)*n*sle.config.K*sle.config.NK:]
-	
+
 	// Add 1 to all sketches (original logic)
 	for i := range sketches {
 		if sketches[i] != math.MaxUint32 {
 			sketches[i]++
 		}
 	}
-	
+
 	// Convert flat arrays to VertexBottomKSketch objects
 	newSketchManager := sle.convertToVertexSketches(sketches, nodeHashValue, n)
 
@@ -200,16 +197,16 @@ func (sle *SketchLouvainEngine) initializeGraphAndSketches() error {
 			sle.sketchLouvainState.nodeToCommunity[nodeId] = -1 // Not in any community
 			continue
 		}
-		
+
 		// Each node starts in its own community
 		sle.sketchLouvainState.nodeToCommunity[nodeId] = nodeId
 		sle.sketchLouvainState.communityToNodes[nodeId] = []int64{nodeId}
 		sle.sketchLouvainState.activeCommunities[nodeId] = true
-		
+
 		// Create initial community sketch (copy of node sketch)
 		sle.sketchLouvainState.sketchManager.UpdateCommunitySketch(nodeId, []int64{nodeId})
 	}
-	
+
 	sle.sketchLouvainState.CalculateWholeWeight()
 
 	sle.result = NewSketchLouvainResult()
@@ -224,8 +221,8 @@ func (sle *SketchLouvainEngine) initializeGraphAndSketches() error {
 		}
 	}
 	fmt.Println()
-	
-	return sle.result.WriteFiles(sle.config)
+
+	return nil
 }
 
 // convertToVertexSketches converts flat arrays to VertexBottomKSketch objects
@@ -236,7 +233,7 @@ func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeH
 		if nodeHashValue[i*sle.config.NK] != 0 {
 			// Create vertex sketch
 			sketch := NewVertexBottomKSketch(i, sle.config.K, sle.config.NK)
-			
+
 			// Prepare all sketch data at once
 			allSketchData := make([][]uint32, sle.config.NK)
 			for j := int64(0); j < sle.config.NK; j++ {
@@ -251,10 +248,10 @@ func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeH
 				}
 				allSketchData[j] = layerSketch
 			}
-			
+
 			// Set it all at once
 			sketch.SetCompleteSketch(allSketchData)
-			
+
 			// Build hash to node mapping
 			for j := int64(0); j < sle.config.NK; j++ {
 				hashValue := nodeHashValue[i*sle.config.NK+j]
@@ -276,7 +273,7 @@ func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeH
 			for j := int64(0); j < sle.config.NK; j++ {
 				cleanedSketch := make([]uint32, sle.config.K)
 				cleanIdx := 0
-				
+
 				for ki := int64(0); ki < sle.config.K; ki++ {
 					val := sketch.sketches[j][ki]
 					if val != math.MaxUint32 && !nodeOwnHashes[val] {
@@ -286,13 +283,13 @@ func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeH
 						}
 					}
 				}
-				
+
 				// Fill remaining with MaxUint32
 				for cleanIdx < int(sle.config.K) {
 					cleanedSketch[cleanIdx] = math.MaxUint32
 					cleanIdx++
 				}
-				
+
 				sketch.sketches[j] = cleanedSketch
 			}
 
@@ -319,18 +316,18 @@ func (sle *SketchLouvainEngine) findNeighboringCommunities(
 					otherNodecommunity := sle.sketchLouvainState.GetNodeCommunity(otherNodeId)
 					neighborCommunities[otherNodecommunity] = true
 				}
-			
+
 			}
 		}
 		return neighborCommunities
 	}
-	
+
 	// SKETCH METHOD: Use probabilistic intersection counting
 	for otherNodeId, otherSketch := range sle.sketchLouvainState.GetAllVertexSketches() {
 		if otherNodeId == nodeId {
 			continue
 		}
-		
+
 		// Check if other node has this sketch value
 		for _, sketchValue := range nodeSketch.GetLayerHashes(0) {
 			for _, otherSketchValue := range otherSketch.GetLayerHashes(0) {
@@ -342,7 +339,7 @@ func (sle *SketchLouvainEngine) findNeighboringCommunities(
 			}
 		}
 	}
-	
+
 	return neighborCommunities
 }
 
@@ -354,28 +351,32 @@ func (sle *SketchLouvainEngine) calculateModularityGain(
 	if sketch == nil {
 		return 0.0
 	}
-	
+
 	// Get total weight of the graph
 	wholeWeight := sle.sketchLouvainState.GetTotalWeight()
-	
+
 	// Estimate degree of the node
 	nodeDegree := sketch.EstimateCardinality()
-	
+
+	edgesToFrom := sle.estimateEdgesToCommunity(nodeId, sle.sketchLouvainState.GetNodeCommunity(nodeId))
+
 	// Estimate edges to/from communities
 	edgesToTo := sle.estimateEdgesToCommunity(nodeId, toComm)
-	
+
+	fromCommDegree := sle.sketchLouvainState.EstimateCommunityCardinality(
+		sle.sketchLouvainState.GetNodeCommunity(nodeId))
+
 	// Estimate community degrees
 	toCommDegree := sle.sketchLouvainState.EstimateCommunityCardinality(toComm)
 
-	// Calculate gain similar to traditional Louvain but with sketch estimates
-	fmt.Printf("Node %d move to community %d: edgesToTo=%.4f, nodeDegree=%.4f, "+
-		"toCommDegree=%.4f, wholeWeight=%.4f\n",
-		nodeId, toComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight)
 
-	gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
-	if gain < 0 {
-		return 0.0
-	}
+	gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
+
+	// Print all component for debugging
+	// fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
+	// 	" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+	// 	nodeId, toComm, edgesToTo, edgesToFrom,	 nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
+
 	return gain
 }
 
@@ -387,12 +388,12 @@ func (sle *SketchLouvainEngine) estimateEdgesToCommunity(
 	if nodeSketch == nil {
 		return 0.0
 	}
-	
+
 	if !nodeSketch.IsSketchFull() {
 		// EXACT METHOD: Direct counting
 		edgeCount := 0.0
 		nodeSketchLayer := nodeSketch.GetSketch(0)
-		
+
 		for _, sketchValue := range nodeSketchLayer {
 			if sketchValue != math.MaxUint32 {
 				if otherNodeId, exists := sle.sketchLouvainState.GetNodeFromHash(sketchValue); exists {
@@ -404,68 +405,68 @@ func (sle *SketchLouvainEngine) estimateEdgesToCommunity(
 		}
 		return edgeCount
 	}
-	
+
 	// SKETCH METHOD: Inclusion-Exclusion
 	// |sketch(node) ∩ sketch(community)| = |sketch(node)| + |sketch(community)| - |sketch(node) ∪ sketch(community)|
-	
+
 	// Step 1: Get node degree estimate
 	nodeDegree := nodeSketch.EstimateCardinality()
-	
-	// Step 2: Get community degree estimate  
+
+	// Step 2: Get community degree estimate
 	communityDegree := sle.sketchLouvainState.EstimateCommunityCardinality(targetComm)
-	
+
 	// Step 3: Create union sketch and estimate its cardinality
 	communitySketch := sle.sketchLouvainState.GetCommunitySketch(targetComm)
 	unionSketch := nodeSketch.UnionWith(communitySketch)
 	unionDegree := unionSketch.EstimateCardinality()
-	
+
 	// Step 4: Apply inclusion-exclusion
 	intersectionSize := nodeDegree + communityDegree - unionDegree
-	
-	return math.Max(0, intersectionSize)  // Ensure non-negative
+
+	return math.Max(0, intersectionSize) // Ensure non-negative
 }
 
 // aggregateCommunities creates super-graph from communities
 func (sle *SketchLouvainEngine) aggregateCommunities() error {
 	fmt.Println("\n=== COMMUNITY AGGREGATION PHASE ===")
-	
+
 	// Step 1: Get current state before aggregation
 	communityNodes := sle.sketchLouvainState.GetCommunityToNodesMap()
-	
+
 	// Step 2: Create mapping from old community IDs to new super-node IDs
 	commToNewNode := make(map[int64]int64)
 	newNodeId := int64(0)
 	for oldComm := range communityNodes {
 		commToNewNode[oldComm] = newNodeId
-		fmt.Printf("Community %d -> Super-node %d (contains %d nodes)\n", 
+		fmt.Printf("Community %d -> Super-node %d (contains %d nodes)\n",
 			oldComm, newNodeId, len(communityNodes[oldComm]))
 		newNodeId++
 	}
-	
+
 	// Step 3: Record the current level BEFORE aggregation (with the mapping)
 	sle.recordCurrentLevel(communityNodes, commToNewNode)
-	
+
 	newNodeCount := int64(len(communityNodes))
-	
+
 	// Step 4: Create new SketchManager for super-graph
 	newSketchManager := NewSketchManager(sle.config.K, sle.config.NK)
-	
+
 	// Step 5: Create super-node sketches
 	superNodeSketches := make(map[int64]*VertexBottomKSketch)
-	
+
 	for oldComm, _ := range communityNodes {
 		newId := commToNewNode[oldComm]
-		
+
 		communitySketch := sle.sketchLouvainState.GetCommunitySketch(oldComm)
 		communitySketch.nodeId = newId
-		
+
 		superNodeSketches[newId] = communitySketch
 		newSketchManager.vertexSketches[newId] = communitySketch
 	}
-	
+
 	// Step 6: Rebuild hash-to-node mapping for super-nodes
 	newHashToNodeMap := make(map[uint32]int64)
-	
+
 	// For each community
 	for oldComm, nodes := range communityNodes {
 		newId := commToNewNode[oldComm]
@@ -484,7 +485,7 @@ func (sle *SketchLouvainEngine) aggregateCommunities() error {
 				for _, hashValue := range layerSketch {
 					if hashValue != math.MaxUint32 {
 						// Update the hash-to-node mapping to point to the new super-node
-						newHashToNodeMap[hashValue] = newId	
+						newHashToNodeMap[hashValue] = newId
 					}
 				}
 			}
@@ -492,23 +493,23 @@ func (sle *SketchLouvainEngine) aggregateCommunities() error {
 	}
 
 	newSketchManager.hashToNodeMap = newHashToNodeMap
-	
+
 	// Step 7: Create NEW sketchLouvainState for super-graph (level N+1)
 	sle.sketchLouvainState = NewSketchLouvainState(newNodeCount, newSketchManager)
-	
-	// Step 8: Initialize super-node communities 
+
+	// Step 8: Initialize super-node communities
 	// Each super-node starts in its own community at the new level
 	for superNodeId := int64(0); superNodeId < newNodeCount; superNodeId++ {
 		// Initialize community membership
 		sle.sketchLouvainState.nodeToCommunity[superNodeId] = superNodeId
 		sle.sketchLouvainState.communityToNodes[superNodeId] = []int64{superNodeId}
 		sle.sketchLouvainState.activeCommunities[superNodeId] = true
-		
+
 		// Create community sketch for this single-member community
 		// (This copies the super-node sketch as the community sketch)
 		sle.sketchLouvainState.sketchManager.UpdateCommunitySketch(superNodeId, []int64{superNodeId})
 	}
-	
+
 	fmt.Println("Super-graph community manager initialized")
 
 	return nil
@@ -516,12 +517,12 @@ func (sle *SketchLouvainEngine) aggregateCommunities() error {
 
 // recordCurrentLevel records the current level state
 func (sle *SketchLouvainEngine) recordCurrentLevel(
-	communityToNodes map[int64][]int64, 
+	communityToNodes map[int64][]int64,
 	commToNewNode map[int64]int64,
 ) {
 	community := sle.sketchLouvainState.GetNodesToCommunityMap()
 	sketches := sle.sketchLouvainState.GetAllVertexSketches()
 	hashMap := sle.sketchLouvainState.sketchManager.hashToNodeMap
-	
+
 	sle.result.AddLevel(community, sketches, hashMap, communityToNodes, commToNewNode)
 }

@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"runtime"
 	"time"
+	"strings"
+	"sort"
 )
 
 // RunLouvain executes the complete Louvain algorithm on normalized graph
@@ -152,8 +154,6 @@ func NewLouvainState(graph *NormalizedGraph, config LouvainConfig) *LouvainState
 // starts in its own community (ready for the next level of optimization)
 
 func NewLouvainStateFromCommunities(superGraph *NormalizedGraph, config LouvainConfig, communityMap map[int][]int) *LouvainState {
-	fmt.Printf("Initializing new Louvain state for super-graph with %d super-nodes\n", superGraph.NumNodes)
-	
 	// Create the basic state structure
 	state := &LouvainState{
 		Graph:            superGraph,
@@ -192,14 +192,9 @@ func NewLouvainStateFromCommunities(superGraph *NormalizedGraph, config LouvainC
 		totalDegree := superGraph.GetNodeDegree(superNodeIdx)
 		
 		// Set community statistics
-		state.In[communityID] = selfLoopWeight    // Internal weight = self-loops
+		state.In[communityID] = 2 * selfLoopWeight    // Internal weight = self-loops
 		state.Tot[communityID] = totalDegree      // Total weight = total degree
-		
-		fmt.Printf("Super-node %d: community %d, self-loop: %.2f, degree: %.2f\n", 
-			superNodeIdx, communityID, selfLoopWeight, totalDegree)
 	}
-	
-	fmt.Printf("Initialization complete: %d communities (one per super-node)\n", state.CommunityCounter)
 	
 	return state
 }
@@ -210,12 +205,15 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 	nbMoves := 0
 	s.Iteration = 0
 
+	// Print initial state
+	s.PrintState(fmt.Sprintf("LEVEL START - Level with %d nodes", s.Graph.NumNodes), "ALL")
+
 	fmt.Printf("\n\n\nStarting Louvain level with %d nodes, initial modularity: %.4f\n",
 		s.Graph.NumNodes, s.GetModularity())
 
 	// ==============================================================================================
 
-	for {
+	for s.Iteration < s.Config.MaxIterations {
 		s.Iteration++
 		iterMoves := 0
 		
@@ -260,7 +258,7 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 	}
 
 	finalModularity := s.GetModularity()
-	fmt.Printf("Final modularity after level %d: %.4f, moves: %d\n",
+	fmt.Printf("Final modularity after iteration %d: %.4f, moves: %d\n",
 		s.Iteration, finalModularity, nbMoves)
 
 	return improvement && nbMoves > 0, nil
@@ -308,10 +306,24 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 		}
 
 		if bestComm != oldComm && bestGain > s.Config.MinModularity {
-			fmt.Printf("Node %d: moving from community %d to %d (gain: %.4f)\n",
+			fmt.Printf("\n\nNode %d: moving from community %d to %d (gain: %.4f)\n",
 				node, oldComm, bestComm, bestGain)
-			s.removeNodeFromCommunity(node, oldComm)
-			s.insertNodeIntoCommunity(node, bestComm)
+
+			fmt.Printf("Internal weight before move: %.4f\n", s.In[oldComm])
+			if err := s.moveNode(node, oldComm, bestComm); err != nil {
+				fmt.Printf("Error moving node %d: %v\n", node, err)
+				continue
+			}
+			fmt.Printf("Internal weight after move: %.4f\n", s.In[oldComm])
+			if (s.In[oldComm] < 0) {
+				// Print the old community's nodes for debugging
+				fmt.Printf("Old community %d nodes: %v\n", oldComm, s.C2N[oldComm])
+				// Print the new community's nodes for debugging
+				fmt.Printf("New community %d nodes: %v\n", bestComm, s.C2N[bestComm])
+				fmt.Printf("Number of nodes in current state: %d\n", len(s.N2C))
+				// 
+				panic(fmt.Sprintf("Community %d has negative internal weight after move of node %d to %d", oldComm, node, bestComm))
+			}
 			moves++
 		}
 
@@ -352,89 +364,170 @@ func (s *LouvainState) getNeighborCommunities(node int) []NeighborWeight {
 		})
 	}
 	
+						// ADDED FOR REPRODUCIBILITY
+						sort.Slice(result, func(i, j int) bool {
+							return result[i].Community < result[j].Community
+						})
+						// END OF ADDED FOR REPRODUCIBILITY
+
 	return result
 }
 
-// removeNodeFromCommunity removes a node from its community
-func (s *LouvainState) removeNodeFromCommunity(node int, comm int) {
+
+// moveNode atomically moves a node from one community to another
+func (s *LouvainState) moveNode(node int, fromComm int, toComm int) error {
 	// Validate inputs
 	if node < 0 || node >= s.Graph.NumNodes {
-		fmt.Printf("ERROR: Attempting to remove invalid node %d\n", node)
-		return
+		return fmt.Errorf("invalid node %d", node)
 	}
 	
-	if s.N2C[node] != comm {
-		fmt.Printf("ERROR: Node %d is in community %d, not %d\n", node, s.N2C[node], comm)
-		return
-	}
-
-	// Update weights
-	degree := s.Graph.GetNodeDegree(node)
-	
-	// Calculate weight to community
-	weightToComm := 0.0
-	for _, member := range s.C2N[comm] {
-		weightToComm += s.Graph.GetEdgeWeight(node, member)
+	if s.N2C[node] != fromComm {
+		return fmt.Errorf("node %d is in community %d, not %d", node, s.N2C[node], fromComm)
 	}
 	
-	s.Tot[comm] -= degree
-	s.In[comm] -= (2 * weightToComm)
-
-	// Update community node list
-	nodes := s.C2N[comm]
-	nodeFound := false
+	if fromComm == toComm {
+		return nil // No-op
+	}
+	
+	// Calculate weights to both communities 
+	weightToFrom := 0.0
+	for _, member := range s.C2N[fromComm] {
+		weightToFrom += s.Graph.GetEdgeWeight(node, member)
+	}
+	
+	weightToTo := 0.0
+	for _, member := range s.C2N[toComm] {
+		weightToTo += s.Graph.GetEdgeWeight(node, member)
+	}
+	
+	nodeDegree := s.Graph.GetNodeDegree(node)
+	
+	// Update FROM community
+	s.Tot[fromComm] -= nodeDegree
+	s.In[fromComm] -= (2 * weightToFrom)
+	
+	// Remove node from fromComm
+	nodes := s.C2N[fromComm]
 	for i, n := range nodes {
 		if n == node {
-			s.C2N[comm] = append(nodes[:i], nodes[i+1:]...)
-			nodeFound = true
+			s.C2N[fromComm] = append(nodes[:i], nodes[i+1:]...)
 			break
 		}
 	}
-	
-	if !nodeFound {
-		fmt.Printf("ERROR: Node %d not found in C2N[%d]\n", node, comm)
-		return
+
+	// Print everything for debugging
+	fmt.Printf("Moving node %d from community %d to %d: edgesToFrom: %.4f, edgesToTo: %.4f, "+
+		"nodeDegree: %.4f, fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f\n",
+		node, fromComm, toComm, weightToFrom, weightToTo, nodeDegree,
+		s.Tot[fromComm], s.Tot[toComm], s.Graph.TotalWeight)
+
+	// for each node in the old comm, print each node's degree and the weight of the edge to the moved node
+	for _, member := range s.C2N[fromComm] {
+		edgeWeight := s.Graph.GetEdgeWeight(node, member)
+		memberDegree := s.Graph.GetNodeDegree(member)
+		fmt.Printf("  Node %d -> in old community %d: degree=%.4f, edgeWeight=%.4f\n",
+			member, fromComm, memberDegree, edgeWeight)
+	}
+	fmt.Printf(" Node %d's self loop weight: %.4f\n", node, s.Graph.GetEdgeWeight(node, node))
+
+	// Clean up empty community
+	if len(s.C2N[fromComm]) == 0 {
+		delete(s.C2N, fromComm)
+		delete(s.In, fromComm)
+		delete(s.Tot, fromComm)
 	}
 	
-	if len(s.C2N[comm]) == 0 {
-		// If community is empty, remove it
-		delete(s.C2N, comm)
-		delete(s.In, comm)
-		delete(s.Tot, comm)
-	}
+	// Update TO community
+	s.Tot[toComm] += nodeDegree
+	s.In[toComm] += 2 * (weightToTo + s.Graph.GetEdgeWeight(node, node)) // Add self-loop weight
 	
-	s.N2C[node] = -1 // Mark as unassigned
+	// Add node to toComm
+	s.N2C[node] = toComm
+	s.C2N[toComm] = append(s.C2N[toComm], node)
+	
+	return nil
 }
 
-// insertNodeIntoCommunity inserts a node into a community
-func (s *LouvainState) insertNodeIntoCommunity(node int, comm int) {
-	// Validate inputs
-	if node < 0 || node >= s.Graph.NumNodes {
-		fmt.Printf("ERROR: Attempting to insert invalid node %d\n", node)
-		return
-	}
+// // removeNodeFromCommunity removes a node from its community
+// func (s *LouvainState) removeNodeFromCommunity(node int, comm int) {
+// 	// Validate inputs
+// 	if node < 0 || node >= s.Graph.NumNodes {
+// 		fmt.Printf("ERROR: Attempting to remove invalid node %d\n", node)
+// 		return
+// 	}
 	
-	if s.N2C[node] != -1 {
-		fmt.Printf("ERROR: Node %d already assigned to community %d\n", node, s.N2C[node])
-		return
-	}
+// 	if s.N2C[node] != comm {
+// 		fmt.Printf("ERROR: Node %d is in community %d, not %d\n", node, s.N2C[node], comm)
+// 		return
+// 	}
 
-	// Update mapping
-	s.N2C[node] = comm
-	s.C2N[comm] = append(s.C2N[comm], node)
+// 	// Update weights
+// 	degree := s.Graph.GetNodeDegree(node)
 	
-	// Update weights
-	degree := s.Graph.GetNodeDegree(node)
+// 	// Calculate weight to community
+// 	weightToComm := 0.0
+// 	for _, member := range s.C2N[comm] {
+// 		weightToComm += s.Graph.GetEdgeWeight(node, member)
+// 	}
 	
-	// Calculate weight to community
-	weightToComm := 0.0
-	for _, member := range s.C2N[comm] {
-		weightToComm += s.Graph.GetEdgeWeight(node, member)
-	}
+// 	s.Tot[comm] -= degree
+// 	s.In[comm] -= (2 * weightToComm)
 
-	s.Tot[comm] += degree
-	s.In[comm] += 2*weightToComm 
-}
+// 	// Update community node list
+// 	nodes := s.C2N[comm]
+// 	nodeFound := false
+// 	for i, n := range nodes {
+// 		if n == node {
+// 			s.C2N[comm] = append(nodes[:i], nodes[i+1:]...)
+// 			nodeFound = true
+// 			break
+// 		}
+// 	}
+	
+// 	if !nodeFound {
+// 		fmt.Printf("ERROR: Node %d not found in C2N[%d]\n", node, comm)
+// 		return
+// 	}
+	
+// 	if len(s.C2N[comm]) == 0 {
+// 		// If community is empty, remove it
+// 		delete(s.C2N, comm)
+// 		delete(s.In, comm)
+// 		delete(s.Tot, comm)
+// 	}
+	
+// 	s.N2C[node] = -1 // Mark as unassigned
+// }
+
+// // insertNodeIntoCommunity inserts a node into a community
+// func (s *LouvainState) insertNodeIntoCommunity(node int, comm int) {
+// 	// Validate inputs
+// 	if node < 0 || node >= s.Graph.NumNodes {
+// 		fmt.Printf("ERROR: Attempting to insert invalid node %d\n", node)
+// 		return
+// 	}
+	
+// 	if s.N2C[node] != -1 {
+// 		fmt.Printf("ERROR: Node %d already assigned to community %d\n", node, s.N2C[node])
+// 		return
+// 	}
+
+// 	// Update mapping
+// 	s.N2C[node] = comm
+// 	s.C2N[comm] = append(s.C2N[comm], node)
+	
+// 	// Update weights
+// 	degree := s.Graph.GetNodeDegree(node)
+	
+// 	// Calculate weight to community
+// 	weightToComm := 0.0
+// 	for _, member := range s.C2N[comm] {
+// 		weightToComm += s.Graph.GetEdgeWeight(node, member)
+// 	}
+
+// 	s.Tot[comm] += degree
+// 	s.In[comm] += 2*weightToComm 
+// }
 
 // Temporary modularityGain function
 func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) float64 {
@@ -456,15 +549,25 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 	}
 	wholeWeight := s.Graph.TotalWeight
 
+	fromCommDegree := 0.0
+	if currentComm >= 0 {
+		if tot, exists := s.Tot[currentComm]; exists {
+			fromCommDegree = tot
+		}
+	}
 
-	// Print all component for debugging
-	fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
-		" toCommDegree: %.4f, wholeWeight: %.4f\n",
-		node, targetComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight)
-
+	edgesToFrom := 0.0
+	for _, member := range s.C2N[currentComm] {
+		edgesToFrom += s.Graph.GetEdgeWeight(node, member)
+	}
+	
 	// Apply your formula
-	gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
+	gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
 
+// 	// Print all component for debugging
+// fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
+// 		" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+// 		node, targetComm, edgesToTo, edgesToFrom, nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
 	return gain
 }
 
@@ -479,8 +582,6 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 		return nil, nil, nil, fmt.Errorf("invalid state before creating super graph: %w", err)
 	}
 	
-	fmt.Printf("Creating super-graph from %d communities\n", len(s.C2N))
-	
 	// =============================================================================
 	// STEP 1: AGGREGATE COMMUNITIES INTO SUPER-NODES
 	// =============================================================================
@@ -489,23 +590,44 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 	communityMap := make(map[int][]int)     // Maps super-node index -> original nodes it contains
 	commToNewIndex := make(map[int]int)     // Maps old community ID -> new super-node index
 	
-	// Count non-empty communities and create the mapping
-	numSuperNodes := 0
-	for oldCommID, nodes := range s.C2N {
-		if len(nodes) > 0 {
-			// This community becomes super-node with index numSuperNodes
-			commToNewIndex[oldCommID] = numSuperNodes
-			
-			// Store which original nodes this super-node represents
-			communityMap[numSuperNodes] = make([]int, len(nodes))
-			copy(communityMap[numSuperNodes], nodes)
-			
-			numSuperNodes++
-			
-			fmt.Printf("Community %d (%d nodes) -> Super-node %d\n", 
-				oldCommID, len(nodes), numSuperNodes-1)
-		}
-	}
+
+							// // Count non-empty communities and create the mapping
+							// numSuperNodes := 0
+							// for oldCommID, nodes := range s.C2N {
+							// 	if len(nodes) > 0 {
+							// 		// This community becomes super-node with index numSuperNodes
+							// 		commToNewIndex[oldCommID] = numSuperNodes
+									
+							// 		// Store which original nodes this super-node represents
+							// 		communityMap[numSuperNodes] = make([]int, len(nodes))
+							// 		copy(communityMap[numSuperNodes], nodes)
+									
+							// 		numSuperNodes++
+							// 	}
+							// }
+					// DETERMINISTICALLY SORTED COMMUNITIES
+					communityIDs := make([]int, 0, len(s.C2N))
+					for oldCommID, nodes := range s.C2N {
+						if len(nodes) > 0 {
+							communityIDs = append(communityIDs, oldCommID)
+						}
+					}
+					sort.Ints(communityIDs)
+
+					// Process communities in sorted order
+					numSuperNodes := 0
+					for _, oldCommID := range communityIDs {
+						nodes := s.C2N[oldCommID]
+						// This community becomes super-node with index numSuperNodes
+						commToNewIndex[oldCommID] = numSuperNodes
+						
+						// Store which original nodes this super-node represents
+						communityMap[numSuperNodes] = make([]int, len(nodes))
+						copy(communityMap[numSuperNodes], nodes)
+						
+						numSuperNodes++
+					}
+					// END OF DETERMINISTICALLY SORTED COMMUNITIES
 	
 	if numSuperNodes == 0 {
 		return nil, nil, nil, fmt.Errorf("no valid communities found")
@@ -525,7 +647,6 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 	// Create a brand new graph with numSuperNodes nodes
 	
 	superGraph := NewNormalizedGraph(numSuperNodes)
-	fmt.Printf("Created super-graph with %d super-nodes\n", numSuperNodes)
 	
 	// =============================================================================
 	// STEP 3: CALCULATE SUPER-NODE WEIGHTS
@@ -544,8 +665,6 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 		}
 		
 		superGraph.Weights[superNodeIdx] = totalWeight
-		fmt.Printf("Super-node %d weight: %.2f (from %d original nodes)\n", 
-			superNodeIdx, totalWeight, len(originalNodes))
 	}
 	
 	// =============================================================================
@@ -556,8 +675,6 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 	
 	// Use string keys to track edges between super-nodes (e.g., "0-1", "2-2")
 	superEdgeWeights := make(map[string]float64)
-	
-	fmt.Println("Aggregating edge weights...")
 	
 	// Process every edge in the original graph
 	for nodeI := 0; nodeI < s.Graph.NumNodes; nodeI++ {
@@ -597,37 +714,58 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 	// =============================================================================
 	// Convert the accumulated edge weights into actual edges in the super-graph
 	
-	edgeCount := 0
-	for edgeKey, totalWeight := range superEdgeWeights {
-		// Parse the edge key to get super-node indices
-		var fromSuperNode, toSuperNode int
-		n, err := fmt.Sscanf(edgeKey, "%d-%d", &fromSuperNode, &toSuperNode)
-		if n != 2 || err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to parse edge key %s: %w", edgeKey, err)
-		}
-		
-		// Validate super-node indices
-		if fromSuperNode < 0 || fromSuperNode >= numSuperNodes || 
-		   toSuperNode < 0 || toSuperNode >= numSuperNodes {
-			return nil, nil, nil, fmt.Errorf("invalid super-node indices: %d-%d (max: %d)", 
-				fromSuperNode, toSuperNode, numSuperNodes-1)
-		}
-		
-		// Add the edge to the super-graph
-		superGraph.AddEdge(fromSuperNode, toSuperNode, totalWeight)
-		edgeCount++
-		
-		// Log self-loops (intra-community edges) vs inter-community edges
-		if fromSuperNode == toSuperNode {
-			fmt.Printf("Self-loop: Super-node %d, weight: %.2f (intra-community)\n", 
-				fromSuperNode, totalWeight)
-		} else {
-			fmt.Printf("Inter-edge: Super-node %d <-> %d, weight: %.2f\n", 
-				fromSuperNode, toSuperNode, totalWeight)
-		}
-	}
-	
-	fmt.Printf("Added %d edges to super-graph\n", edgeCount)
+								// edgeCount := 0
+								// for edgeKey, totalWeight := range superEdgeWeights {
+								// 	// Parse the edge key to get super-node indices
+								// 	var fromSuperNode, toSuperNode int
+								// 	n, err := fmt.Sscanf(edgeKey, "%d-%d", &fromSuperNode, &toSuperNode)
+								// 	if n != 2 || err != nil {
+								// 		return nil, nil, nil, fmt.Errorf("failed to parse edge key %s: %w", edgeKey, err)
+								// 	}
+									
+								// 	// Validate super-node indices
+								// 	if fromSuperNode < 0 || fromSuperNode >= numSuperNodes || 
+								// 	   toSuperNode < 0 || toSuperNode >= numSuperNodes {
+								// 		return nil, nil, nil, fmt.Errorf("invalid super-node indices: %d-%d (max: %d)", 
+								// 			fromSuperNode, toSuperNode, numSuperNodes-1)
+								// 	}
+									
+								// 	// Add the edge to the super-graph
+								// 	// Undirected graph: need to divide weight by 2 because of double counting
+								// 	superGraph.AddEdge(fromSuperNode, toSuperNode, totalWeight / 2)
+								// 	edgeCount++
+								// }
+						// DETERMINISTICALLY SORTED EDGES
+						edgeKeys := make([]string, 0, len(superEdgeWeights))
+						for edgeKey := range superEdgeWeights {
+							edgeKeys = append(edgeKeys, edgeKey)
+						}
+						sort.Strings(edgeKeys)
+
+						// Process edges in sorted order
+						edgeCount := 0
+						for _, edgeKey := range edgeKeys {
+							totalWeight := superEdgeWeights[edgeKey]
+							// Parse the edge key to get super-node indices
+							var fromSuperNode, toSuperNode int
+							n, err := fmt.Sscanf(edgeKey, "%d-%d", &fromSuperNode, &toSuperNode)
+							if n != 2 || err != nil {
+								return nil, nil, nil, fmt.Errorf("failed to parse edge key %s: %w", edgeKey, err)
+							}
+							
+							// Validate super-node indices
+							if fromSuperNode < 0 || fromSuperNode >= numSuperNodes || 
+							toSuperNode < 0 || toSuperNode >= numSuperNodes {
+								return nil, nil, nil, fmt.Errorf("invalid super-node indices: %d-%d (max: %d)", 
+									fromSuperNode, toSuperNode, numSuperNodes-1)
+							}
+							
+							// Add the edge to the super-graph
+							// Undirected graph: need to divide weight by 2 because of double counting
+							superGraph.AddEdge(fromSuperNode, toSuperNode, totalWeight / 2)
+							edgeCount++
+						}
+						// END OF DETERMINISTICALLY SORTED EDGES
 
 	// Create reverse mapping: super-node index → community ID
     superNodeToComm := make(map[int]int)
@@ -643,9 +781,6 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 	if err := superGraph.Validate(); err != nil {
 		return nil, nil, nil, fmt.Errorf("created invalid super-graph: %w", err)
 	}
-	
-	fmt.Printf("Super-graph creation complete: %d nodes, %d edges\n", 
-		superGraph.NumNodes, edgeCount)
 	
 	return superGraph, communityMap, superNodeToComm, nil
 }
@@ -774,3 +909,121 @@ func (s *LouvainState) cleanupEmptyCommunities() {
 }
 
 
+
+// =================================================================================
+// DEBUGGING AND PRINTING FUNCTIONS
+// =================================================================================
+
+
+// PrintState prints the state of the Louvain algorithm execution
+// mode can be "ALL", "COMMUNITIES", or "GRAPH"
+func (s *LouvainState) PrintState(label string, mode string) {
+	fmt.Printf("\n" + strings.Repeat("=", 80) + "\n")
+	fmt.Printf("STATE: %s (Mode: %s)\n", label, mode)
+	fmt.Printf(strings.Repeat("=", 80) + "\n")
+	
+	if mode == "GRAPH" || mode == "ALL" {
+		s.printGraph()
+	}
+	
+	if mode == "COMMUNITIES" || mode == "ALL" {
+		s.printCommunities()
+	}
+	
+	fmt.Printf(strings.Repeat("=", 80) + "\n")
+}
+
+// printGraph prints the graph structure
+func (s *LouvainState) printGraph() {
+	fmt.Printf("GRAPH STRUCTURE:\n")
+	fmt.Printf("  Nodes: %d\n", s.Graph.NumNodes)
+	fmt.Printf("  Total weight: %.4f\n", s.Graph.TotalWeight)
+	fmt.Printf("\n")
+	
+	for i := 0; i < s.Graph.NumNodes; i++ {
+		neighbors := s.Graph.GetNeighbors(i)
+		degree := s.Graph.GetNodeDegree(i)
+		weight := s.Graph.Weights[i]
+		
+		fmt.Printf("  Node %d: degree=%.2f, weight=%.2f, neighbors=[", i, degree, weight)
+		neighborList := []string{}
+		for neighbor, edgeWeight := range neighbors {
+			neighborList = append(neighborList, fmt.Sprintf("%d(%.2f)", neighbor, edgeWeight))
+		}
+		sort.Strings(neighborList)
+		fmt.Printf("%s]\n", strings.Join(neighborList, ", "))
+	}
+	fmt.Printf("\n")
+}
+
+// printCommunities prints the community structure
+func (s *LouvainState) printCommunities() {
+	fmt.Printf("COMMUNITY STRUCTURE:\n")
+	fmt.Printf("  Active communities: %d\n", len(s.C2N))
+	fmt.Printf("  Current modularity: %.6f\n", s.GetModularity())
+	fmt.Printf("\n")
+	
+	// Print N2C (node -> community)
+	fmt.Printf("N2C (Node -> Community):\n")
+	for i := 0; i < len(s.N2C); i++ {
+		fmt.Printf("  Node %d -> Community %d\n", i, s.N2C[i])
+	}
+	fmt.Printf("\n")
+	
+	// Print C2N (community -> nodes)
+	fmt.Printf("C2N (Community -> Nodes):\n")
+	communityIDs := make([]int, 0, len(s.C2N))
+	for commID := range s.C2N {
+		communityIDs = append(communityIDs, commID)
+	}
+	sort.Ints(communityIDs)
+	
+	for _, commID := range communityIDs {
+		nodes := s.C2N[commID]
+		nodesCopy := make([]int, len(nodes))
+		copy(nodesCopy, nodes)
+		sort.Ints(nodesCopy)
+		fmt.Printf("  Community %d -> Nodes %v (count: %d)\n", commID, nodesCopy, len(nodes))
+	}
+	fmt.Printf("\n")
+	
+	// Print In (internal weights)
+	fmt.Printf("In (Internal Weights):\n")
+	for _, commID := range communityIDs {
+		fmt.Printf("  Community %d -> In: %.4f\n", commID, s.In[commID])
+	}
+	fmt.Printf("\n")
+	
+	// Print Tot (total weights)
+	fmt.Printf("Tot (Total Weights):\n")
+	totalSum := 0.0
+	for _, commID := range communityIDs {
+		tot := s.Tot[commID]
+		fmt.Printf("  Community %d -> Tot: %.4f\n", commID, tot)
+		totalSum += tot
+	}
+	fmt.Printf("  TOTAL Sum: %.4f\n", totalSum)
+	fmt.Printf("\n")
+	
+	// Summary table
+	fmt.Printf("COMMUNITY SUMMARY:\n")
+	fmt.Printf("  %-10s %-10s %-10s %-10s %-10s\n", "Community", "Nodes", "In", "Tot", "Modularity")
+	fmt.Printf("  %s\n", strings.Repeat("-", 55))
+	
+	for _, commID := range communityIDs {
+		nodeCount := len(s.C2N[commID])
+		in := s.In[commID]
+		tot := s.Tot[commID]
+		
+		// Calculate individual community contribution to modularity
+		m2 := 2 * s.Graph.TotalWeight
+		commModularity := 0.0
+		if m2 > 0 {
+			commModularity = in/m2 - (tot/m2)*(tot/m2)
+		}
+		
+		fmt.Printf("  %-10d %-10d %-10.4f %-10.4f %-10.6f\n", 
+			commID, nodeCount, in, tot, commModularity)
+	}
+	fmt.Printf("\n")
+}

@@ -116,7 +116,7 @@ func DefaultLouvainConfig() LouvainConfig {
 	return LouvainConfig{
 		MaxCommunitySize: 0,        // No limit by default
 		MinModularity:    0.001,   
-		MaxIterations:    100,      
+		MaxIterations:    10,      
 		NumWorkers:       4,
 		ChunkSize:        32,
 		RandomSeed:       -1,       // Use time-based seed

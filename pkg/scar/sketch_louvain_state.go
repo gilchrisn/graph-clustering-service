@@ -1,8 +1,8 @@
 package scar
 
-import (
-	"fmt"
-)
+// import (
+// 	"fmt"
+// )
 // SketchLouvainState manages community membership and delegates sketch operations
 type SketchLouvainState struct {
 	nodeToCommunity   []int64               // node -> community mapping
@@ -106,7 +106,6 @@ func (sls *SketchLouvainState) GetCommunitySketch(commId int64) *VertexBottomKSk
 // Estimate community cardinality via delegation
 func (sls *SketchLouvainState) EstimateCommunityCardinality(commId int64) float64 {
 	memberNodes := sls.GetCommunityNodes(commId)
-	fmt.Printf("Estimating cardinality for community %d with %d members\n", commId, len(memberNodes))
 	return sls.sketchManager.EstimateCommunityCardinality(commId, memberNodes)
 }
 
@@ -132,5 +131,5 @@ func (sls *SketchLouvainState) CalculateWholeWeight() {
 	for _, sketch := range sls.sketchManager.vertexSketches {
 		totalWeight += sketch.EstimateCardinality()
 	}
-	sls.totalWeight = totalWeight
+	sls.totalWeight = totalWeight / 2
 }

@@ -1053,25 +1053,25 @@ func convertHomogeneousToNormalized(hgraph *materialization.HomogeneousGraph) (*
 		return nil, nil, fmt.Errorf("empty homogeneous graph")
 	}
 	
-	// ========== BEFORE: INPUT HOMOGENEOUS GRAPH ==========
-	fmt.Println("\n=== BEFORE CONVERSION: HOMOGENEOUS GRAPH ===")
-	fmt.Printf("Nodes: %d\n", len(hgraph.Nodes))
-	fmt.Printf("Edges: %d\n", len(hgraph.Edges))
+	// // ========== BEFORE: INPUT HOMOGENEOUS GRAPH ==========
+	// fmt.Println("\n=== BEFORE CONVERSION: HOMOGENEOUS GRAPH ===")
+	// fmt.Printf("Nodes: %d\n", len(hgraph.Nodes))
+	// fmt.Printf("Edges: %d\n", len(hgraph.Edges))
 	
-	// Show all nodes
-	fmt.Println("Nodes:")
-	for nodeID, node := range hgraph.Nodes {
-		fmt.Printf("  %s: degree=%d\n", nodeID, node.Degree)
-	}
+	// // Show all nodes
+	// fmt.Println("Nodes:")
+	// for nodeID, node := range hgraph.Nodes {
+	// 	fmt.Printf("  %s: degree=%d\n", nodeID, node.Degree)
+	// }
 	
-	// Show all edges
-	fmt.Println("Edges:")
-	totalWeight := 0.0
-	for edgeKey, weight := range hgraph.Edges {
-		fmt.Printf("  %s -> %s: %.2f\n", edgeKey.From, edgeKey.To, weight)
-		totalWeight += weight
-	}
-	fmt.Printf("Total edge weight: %.2f\n", totalWeight)
+	// // Show all edges
+	// fmt.Println("Edges:")
+	// totalWeight := 0.0
+	// for edgeKey, weight := range hgraph.Edges {
+	// 	fmt.Printf("  %s -> %s: %.2f\n", edgeKey.From, edgeKey.To, weight)
+	// 	totalWeight += weight
+	// }
+	// fmt.Printf("Total edge weight: %.2f\n", totalWeight)
 	
 	// ========== CONVERSION PROCESS ==========
 	parser := louvain.NewGraphParser()
@@ -1083,11 +1083,11 @@ func convertHomogeneousToNormalized(hgraph *materialization.HomogeneousGraph) (*
 	}
 	sort.Strings(nodeList) // Sort for deterministic mapping
 	
-	fmt.Println("\n=== CONVERSION PROCESS ===")
-	fmt.Println("Node ID mapping:")
-	for i, originalID := range nodeList {
-		fmt.Printf("  %s -> %d\n", originalID, i)
-	}
+	// fmt.Println("\n=== CONVERSION PROCESS ===")
+	// fmt.Println("Node ID mapping:")
+	// for i, originalID := range nodeList {
+	// 	fmt.Printf("  %s -> %d\n", originalID, i)
+	// }
 	
 	// Create normalized graph
 	normalizedGraph := louvain.NewNormalizedGraph(len(nodeList))
@@ -1105,7 +1105,7 @@ func convertHomogeneousToNormalized(hgraph *materialization.HomogeneousGraph) (*
 	parser.NumNodes = len(nodeList)
 	
 	// ✅ Convert edges with deduplication to prevent double counting
-	fmt.Println("\nEdge conversion:")
+	// fmt.Println("\nEdge conversion:")
 	processedEdges := make(map[string]bool)
 	edgeCount := 0
 	
@@ -1127,84 +1127,84 @@ func convertHomogeneousToNormalized(hgraph *materialization.HomogeneousGraph) (*
 		
 		// ✅ Only process each undirected edge once
 		if !processedEdges[canonicalID] {
-			fmt.Printf("  %s->%s (%.2f) becomes %d->%d (%.2f) [ADDED]\n", 
-				edgeKey.From, edgeKey.To, weight, fromNormalized, toNormalized, weight)
+			// fmt.Printf("  %s->%s (%.2f) becomes %d->%d (%.2f) [ADDED]\n", 
+			// 	edgeKey.From, edgeKey.To, weight, fromNormalized, toNormalized, weight)
 			
 			normalizedGraph.AddEdge(fromNormalized, toNormalized, weight)
 			processedEdges[canonicalID] = true
 			edgeCount++
 		} else {
-			fmt.Printf("  %s->%s (%.2f) becomes %d->%d (%.2f) [SKIPPED - duplicate]\n", 
-				edgeKey.From, edgeKey.To, weight, fromNormalized, toNormalized, weight)
+			// fmt.Printf("  %s->%s (%.2f) becomes %d->%d (%.2f) [SKIPPED - duplicate]\n", 
+			// 	edgeKey.From, edgeKey.To, weight, fromNormalized, toNormalized, weight)
 		}
 	}
 	
-	fmt.Printf("Processed %d unique edges out of %d total edges\n", edgeCount, len(hgraph.Edges))
+	// fmt.Printf("Processed %d unique edges out of %d total edges\n", edgeCount, len(hgraph.Edges))
 	
-	// ========== AFTER: NORMALIZED GRAPH ==========
-	fmt.Println("\n=== AFTER CONVERSION: NORMALIZED GRAPH ===")
-	fmt.Printf("NumNodes: %d\n", normalizedGraph.NumNodes)
-	fmt.Printf("TotalWeight: %.2f\n", normalizedGraph.TotalWeight)
+	// // ========== AFTER: NORMALIZED GRAPH ==========
+	// fmt.Println("\n=== AFTER CONVERSION: NORMALIZED GRAPH ===")
+	// fmt.Printf("NumNodes: %d\n", normalizedGraph.NumNodes)
+	// fmt.Printf("TotalWeight: %.2f\n", normalizedGraph.TotalWeight)
 	
-	// Show node degrees and weights
-	fmt.Println("Node degrees and weights:")
-	for i := 0; i < normalizedGraph.NumNodes; i++ {
-		originalID := parser.NormalizedToOriginal[i]
-		fmt.Printf("  Node %d (%s): degree=%.2f, weight=%.2f\n", 
-			i, originalID, normalizedGraph.Degrees[i], normalizedGraph.Weights[i])
-	}
+	// // Show node degrees and weights
+	// fmt.Println("Node degrees and weights:")
+	// for i := 0; i < normalizedGraph.NumNodes; i++ {
+	// 	originalID := parser.NormalizedToOriginal[i]
+	// 	fmt.Printf("  Node %d (%s): degree=%.2f, weight=%.2f\n", 
+	// 		i, originalID, normalizedGraph.Degrees[i], normalizedGraph.Weights[i])
+	// }
 	
-	// Show adjacency lists
-	fmt.Println("Adjacency lists:")
-	for i := 0; i < normalizedGraph.NumNodes; i++ {
-		originalID := parser.NormalizedToOriginal[i]
-		neighbors := normalizedGraph.Adjacency[i]
-		weights := normalizedGraph.EdgeWeights[i]
+	// // Show adjacency lists
+	// fmt.Println("Adjacency lists:")
+	// for i := 0; i < normalizedGraph.NumNodes; i++ {
+	// 	originalID := parser.NormalizedToOriginal[i]
+	// 	neighbors := normalizedGraph.Adjacency[i]
+	// 	weights := normalizedGraph.EdgeWeights[i]
 		
-		fmt.Printf("  Node %d (%s): ", i, originalID)
-		for j, neighbor := range neighbors {
-			neighborOriginalID := parser.NormalizedToOriginal[neighbor]
-			fmt.Printf("(%d/%s, %.2f) ", neighbor, neighborOriginalID, weights[j])
-		}
-		fmt.Println()
+	// 	fmt.Printf("  Node %d (%s): ", i, originalID)
+	// 	for j, neighbor := range neighbors {
+	// 		neighborOriginalID := parser.NormalizedToOriginal[neighbor]
+	// 		fmt.Printf("(%d/%s, %.2f) ", neighbor, neighborOriginalID, weights[j])
+	// 	}
+	// 	fmt.Println()
 		
-		// Check for duplicates in adjacency list
-		seen := make(map[int]int)
-		for _, neighbor := range neighbors {
-			seen[neighbor]++
-		}
-		for neighbor, count := range seen {
-			if count > 1 {
-				neighborOriginalID := parser.NormalizedToOriginal[neighbor]
-				fmt.Printf("    ❌ DUPLICATE: neighbor %d (%s) appears %d times\n", 
-					neighbor, neighborOriginalID, count)
-			}
-		}
-	}
+	// 	// Check for duplicates in adjacency list
+	// 	seen := make(map[int]int)
+	// 	for _, neighbor := range neighbors {
+	// 		seen[neighbor]++
+	// 	}
+	// 	for neighbor, count := range seen {
+	// 		if count > 1 {
+	// 			neighborOriginalID := parser.NormalizedToOriginal[neighbor]
+	// 			fmt.Printf("    ❌ DUPLICATE: neighbor %d (%s) appears %d times\n", 
+	// 				neighbor, neighborOriginalID, count)
+	// 		}
+	// 	}
+	// }
 	
-	// Show all edges in normalized format
-	fmt.Println("All edges (reconstructed from adjacency):")
-	processedPairs := make(map[string]bool)
-	for i := 0; i < normalizedGraph.NumNodes; i++ {
-		for j, neighbor := range normalizedGraph.Adjacency[i] {
-			// Avoid showing each edge twice
-			var pairKey string
-			if i <= neighbor {
-				pairKey = fmt.Sprintf("%d-%d", i, neighbor)
-			} else {
-				pairKey = fmt.Sprintf("%d-%d", neighbor, i)
-			}
+	// // Show all edges in normalized format
+	// fmt.Println("All edges (reconstructed from adjacency):")
+	// processedPairs := make(map[string]bool)
+	// for i := 0; i < normalizedGraph.NumNodes; i++ {
+	// 	for j, neighbor := range normalizedGraph.Adjacency[i] {
+	// 		// Avoid showing each edge twice
+	// 		var pairKey string
+	// 		if i <= neighbor {
+	// 			pairKey = fmt.Sprintf("%d-%d", i, neighbor)
+	// 		} else {
+	// 			pairKey = fmt.Sprintf("%d-%d", neighbor, i)
+	// 		}
 			
-			if !processedPairs[pairKey] {
-				weight := normalizedGraph.EdgeWeights[i][j]
-				iOriginal := parser.NormalizedToOriginal[i]
-				neighborOriginal := parser.NormalizedToOriginal[neighbor]
-				fmt.Printf("  %d (%s) <-> %d (%s): %.2f\n", 
-					i, iOriginal, neighbor, neighborOriginal, weight)
-				processedPairs[pairKey] = true
-			}
-		}
-	}
+	// 		if !processedPairs[pairKey] {
+	// 			weight := normalizedGraph.EdgeWeights[i][j]
+	// 			iOriginal := parser.NormalizedToOriginal[i]
+	// 			neighborOriginal := parser.NormalizedToOriginal[neighbor]
+	// 			fmt.Printf("  %d (%s) <-> %d (%s): %.2f\n", 
+	// 				i, iOriginal, neighbor, neighborOriginal, weight)
+	// 			processedPairs[pairKey] = true
+	// 		}
+	// 	}
+	// }
 	
 	// Validate the converted graph
 	if err := normalizedGraph.Validate(); err != nil {
