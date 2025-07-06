@@ -18,6 +18,7 @@ type LevelResult struct {
 	hashMap          map[uint32]int64                // hashMap[hash] = nodeId
 	communityToNodes map[int64][]int64               // community -> member nodes
 	commToNewNode    map[int64]int64                 // old community -> new super-node
+	adjacencyList    map[int64][]WeightedEdge               // adjacency list for each community
 }
 
 // SketchLouvainResult stores the complete hierarchical clustering result
@@ -42,6 +43,7 @@ func (slr *SketchLouvainResult) AddLevel(
 	hashMap map[uint32]int64,
 	communityToNodes map[int64][]int64,
 	commToNewNode map[int64]int64,
+	adjacencyList map[int64][]WeightedEdge, 
 ) {
 	// Make copies to avoid reference issues
 	partitionCopy := make([]int64, len(partition))
@@ -69,18 +71,124 @@ func (slr *SketchLouvainResult) AddLevel(
 		commToNewNodeCopy[oldComm] = newNode
 	}
 	
+	adjacencyListCopy := make(map[int64][]WeightedEdge)
+	for nodeId, edges := range adjacencyList {
+		edgesCopy := make([]WeightedEdge, len(edges))
+		for i, edge := range edges {
+			edgesCopy[i] = WeightedEdge{
+				neighbor: edge.neighbor,
+				weight:   edge.weight,
+			}
+		}
+		adjacencyListCopy[nodeId] = edgesCopy
+	}
+
 	levelResult := LevelResult{
 		partition:        partitionCopy,
 		sketches:         sketchesCopy,
 		hashMap:          hashMapCopy,
 		communityToNodes: communityToNodesCopy,
 		commToNewNode:    commToNewNodeCopy,
+		adjacencyList:    adjacencyListCopy,
 	}
-	
+
 	slr.levels = append(slr.levels, levelResult)
 	
 	fmt.Printf("Added level %d with %d nodes, %d communities\n", 
 		len(slr.levels)-1, len(partition), len(communityToNodes))
+}
+
+
+func (slr *SketchLouvainResult) writeSketchGraphFiles(config SCARConfig) error {
+	if len(slr.levels) == 0 {
+		return fmt.Errorf("no levels available for sketch graph output")
+	}
+	
+	firstLevel := slr.levels[0]
+	
+	if err := slr.writeEdgeListFile(config, firstLevel.adjacencyList); err != nil {
+		return fmt.Errorf("failed to write edge list: %v", err)
+	}
+	
+	if err := slr.writeAttributesFile(config, firstLevel.adjacencyList); err != nil {
+		return fmt.Errorf("failed to write attributes: %v", err)
+	}
+	
+	return nil
+}
+
+func (slr *SketchLouvainResult) writeEdgeListFile(config SCARConfig, adjacencyList map[int64][]WeightedEdge) error {
+	filename := fmt.Sprintf("%s.edgelist", config.Prefix)
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	
+	edgeSet := make(map[string]bool)
+	
+	var nodeIDs []int64
+	for nodeId := range adjacencyList {
+		nodeIDs = append(nodeIDs, nodeId)
+	}
+	sort.Slice(nodeIDs, func(i, j int) bool { return nodeIDs[i] < nodeIDs[j] })
+	
+	for _, nodeId := range nodeIDs {
+		for _, edge := range adjacencyList[nodeId] {
+			var edgeKey string
+			if nodeId < edge.neighbor {
+				edgeKey = fmt.Sprintf("%d_%d", nodeId, edge.neighbor)
+			} else {
+				edgeKey = fmt.Sprintf("%d_%d", edge.neighbor, nodeId)
+			}
+			
+			if edgeSet[edgeKey] {
+				continue
+			}
+			edgeSet[edgeKey] = true
+			
+			if config.SketchGraphWeights {
+				fmt.Fprintf(file, "%d %d %.6f\n", nodeId, edge.neighbor, edge.weight)
+			} else {
+				fmt.Fprintf(file, "%d %d\n", nodeId, edge.neighbor)
+			}
+		}
+	}
+	return nil
+}
+
+func (slr *SketchLouvainResult) writeAttributesFile(config SCARConfig, adjacencyList map[int64][]WeightedEdge) error {
+	filename := fmt.Sprintf("%s.attributes", config.Prefix)
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	
+	nodeCount := int64(len(adjacencyList))
+	
+	edgeSet := make(map[string]bool)
+	edgeCount := int64(0)
+	
+	for nodeId, edges := range adjacencyList {
+		for _, edge := range edges {
+			var edgeKey string
+			if nodeId < edge.neighbor {
+				edgeKey = fmt.Sprintf("%d_%d", nodeId, edge.neighbor)
+			} else {
+				edgeKey = fmt.Sprintf("%d_%d", edge.neighbor, nodeId)
+			}
+			
+			if !edgeSet[edgeKey] {
+				edgeSet[edgeKey] = true
+				edgeCount++
+			}
+		}
+	}
+	
+	fmt.Fprintf(file, "n = %d\n", nodeCount)
+	fmt.Fprintf(file, "m = %d\n", edgeCount)
+	return nil
 }
 
 // BuildHierarchy builds the hierarchy and mapping structures from stored data
@@ -111,7 +219,8 @@ func (slr *SketchLouvainResult) BuildHierarchy() {
 					for oldComm, newNode := range prevLevelMapping {
 						if newNode == superNode {
 							formattedChildID := fmt.Sprintf("c0_l%d_%d", level, oldComm)
-							slr.hierarchy[formattedID] = append(slr.hierarchy[formattedID], formattedChildID)
+
+							slr.hierarchy[formattedID] = append(slr.hierarchy[formattedID], fmt.Sprintf("%d", oldComm))
 							if childMapping, exists := slr.mapping[formattedChildID]; exists {
 								slr.mapping[formattedID] = append(slr.mapping[formattedID], childMapping...)
 							}
@@ -122,7 +231,7 @@ func (slr *SketchLouvainResult) BuildHierarchy() {
 			}
 		}
 	}
-	
+
 	// Determine root ID
 	if len(slr.levels) > 0 {
 		lastLevel := len(slr.levels) - 1
@@ -136,7 +245,7 @@ func (slr *SketchLouvainResult) BuildHierarchy() {
 			
 			for commID := range lastLevelCommunities {
 				formattedID := fmt.Sprintf("c0_l%d_%d", lastLevel+1, commID)
-				slr.hierarchy[slr.rootID] = append(slr.hierarchy[slr.rootID], formattedID)
+				slr.hierarchy[slr.rootID] = append(slr.hierarchy[slr.rootID], fmt.Sprintf("%d", commID))
 				if nodes, exists := slr.mapping[formattedID]; exists {
 					slr.mapping[slr.rootID] = append(slr.mapping[slr.rootID], nodes...)
 				}
@@ -180,6 +289,12 @@ func (slr *SketchLouvainResult) WriteFiles(config SCARConfig) error {
 			return fmt.Errorf("failed to write sketch file: %v", err)
 		}
 	}
+
+	if config.WriteSketchGraph {
+		if err := slr.writeSketchGraphFiles(config); err != nil {
+			return fmt.Errorf("failed to write sketch graph files: %v", err)
+		}
+	}
 	fmt.Println("Output files written successfully")
 	return nil
 }
@@ -218,7 +333,7 @@ func (slr *SketchLouvainResult) getFinalPartitionToOriginalNodes() []int64 {
 
 // writeMappingFile writes the mapping from communities to original nodes
 func (slr *SketchLouvainResult) writeMappingFile(config SCARConfig) error {
-	filename := fmt.Sprintf("%s_mapping.dat", config.Prefix)
+	filename := fmt.Sprintf("%s.mapping", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -252,7 +367,7 @@ func (slr *SketchLouvainResult) writeMappingFile(config SCARConfig) error {
 
 // writeHierarchyFile writes the hierarchical community structure
 func (slr *SketchLouvainResult) writeHierarchyFile(config SCARConfig) error {
-	filename := fmt.Sprintf("%s_hierarchy.dat", config.Prefix)
+	filename := fmt.Sprintf("%s.hierarchy", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -286,7 +401,7 @@ func (slr *SketchLouvainResult) writeHierarchyFile(config SCARConfig) error {
 
 // writeRootFile writes the root community identifier
 func (slr *SketchLouvainResult) writeRootFile(config SCARConfig) error {
-	filename := fmt.Sprintf("%s_root.dat", config.Prefix)
+	filename := fmt.Sprintf("%s.root", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err

@@ -132,8 +132,10 @@ func (p *GraphParser) createNormalizedMapping(nodeSet map[string]bool) error {
 	}
 	
 	// Sort nodes to ensure consistent ordering
+	// Sort nodes to ensure consistent ordering
 	// Try to sort numerically if all nodes are integers
-	if p.allNodesAreIntegers(nodes) {
+	allIntegers := p.allNodesAreIntegers(nodes)
+	if allIntegers {
 		sort.Slice(nodes, func(i, j int) bool {
 			a, _ := strconv.Atoi(nodes[i])
 			b, _ := strconv.Atoi(nodes[j])
@@ -149,6 +151,18 @@ func (p *GraphParser) createNormalizedMapping(nodeSet map[string]bool) error {
 		p.OriginalToNormalized[node] = i
 		p.NormalizedToOriginal[i] = node
 	}
+	
+	// ============= ADD DEBUG PRINTING HERE =============
+	fmt.Printf("\n=== NODE NORMALIZATION MAPPING ===\n")
+	fmt.Printf("All nodes are integers: %t\n", allIntegers)
+	fmt.Printf("Total nodes: %d\n", p.NumNodes)
+	fmt.Printf("Sorted order: %v\n", nodes)
+	fmt.Printf("\nOriginal -> Normalized mapping:\n")
+	for i, originalNode := range nodes {
+		fmt.Printf("  %s -> %d\n", originalNode, i)
+	}
+	fmt.Printf("===================================\n\n")
+	// ============= END DEBUG PRINTING =============
 	
 	return nil
 }

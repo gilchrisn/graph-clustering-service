@@ -49,6 +49,9 @@ func parseArguments(args []string) scar.SCARConfig {
 		Threshold:    0.5,
 		UseLouvain:   false,
 		SketchOutput: false, // Add this line
+		WriteSketchGraph: true, // Whether to write sketch graph files
+		SketchGraphWeights: false, // Whether to use weights in sketch graph files
+		NumWorkers:   1, // Default number of workers
 	}
 	
 	// Set default prefix from graph file name
@@ -111,6 +114,14 @@ func parseArguments(args []string) scar.SCARConfig {
 		} else if arg == "-sketch-output" {  // Add this block
 			config.SketchOutput = true
 			fmt.Printf("  SketchOutput = true\n")
+		} else if strings.HasPrefix(arg, "-workers=") {
+			if val, err := strconv.ParseInt(strings.TrimPrefix(arg, "-workers="), 10, 32); err == nil {
+				config.NumWorkers = int(val)
+				fmt.Printf("  NumWorkers = %d\n", config.NumWorkers)
+			}
+		} else if arg == "-no-parallel" {
+			config.NumWorkers = 1
+			fmt.Printf("  NumWorkers = 1 (sequential)\n")
 		} else {
 			fmt.Printf("  Unknown argument: '%s'\n", arg)
 		}

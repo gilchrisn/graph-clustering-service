@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -97,11 +98,13 @@ func (sf *SketchF) Cond(d int64) bool {
 // SketchComputer handles the computation of sketches for the graph
 type SketchComputer struct {
 	rng *rand.Rand
+	vertexMutex []sync.Mutex // Mutexes for each vertex to handle concurrent updates
 }
 
-func NewSketchComputer() *SketchComputer {
+func NewSketchComputer(numVertices int64) *SketchComputer {
 	return &SketchComputer{
 		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		vertexMutex: make([]sync.Mutex, numVertices),
 	}
 }
 
@@ -113,6 +116,7 @@ func (sc *SketchComputer) ComputeForGraph(
 	vertexProperties []UintE,
 	nodeHashValue []UintE,
 	k, nk int64,
+	numWorkers int,
 ) {
 	n := G.n
 	firstLabel := path[0]
@@ -124,10 +128,11 @@ func (sc *SketchComputer) ComputeForGraph(
 	for iter := UintE(1); iter < UintE(pathLength); iter++ {
 		
 		f := NewSketchF(sketches, vertexProperties, k, nk, n, iter, path)
-		output := sc.edgeMap(G, frontierVS, f)
-		
+		// output := sc.edgeMap(G, frontierVS, f)
+		output := sc.edgeMapParallel(G, frontierVS, f, numWorkers) 
+
 		// Print sketch state after this iteration
-		sc.printSketchState(sketches, n, k, nk, int64(iter), pathLength)
+		// sc.printSketchState(sketches, n, k, nk, int64(iter), pathLength)
 		
 		frontierVS.Del()
 		frontierVS = output
@@ -135,6 +140,7 @@ func (sc *SketchComputer) ComputeForGraph(
 	
 	frontierVS.Del()
 }
+
 
 func (sc *SketchComputer) printSketchState(sketches []UintE, n, k, nk, currentIter int64, pathLength int64) {
 	for i := int64(0); i < n; i++ {
@@ -152,30 +158,30 @@ func (sc *SketchComputer) printSketchState(sketches []UintE, n, k, nk, currentIt
 			}
 		}
 		
-		// if hasNonMax {
-		// 	fmt.Printf("Node %d sketches: ", i)
-		// 	for j := int64(0); j < nk; j++ {
-		// 		fmt.Printf("layer%d=[", j)
-		// 		for ki := int64(0); ki < k; ki++ {
-		// 			idx := j*n*k + i*k + ki + currentIter*n*k*nk
-		// 			if int64(idx) < int64(len(sketches)) {
-		// 				val := sketches[idx]
-		// 				if val == math.MaxUint32 {
-		// 					fmt.Printf("MAX")
-		// 				} else {
-		// 					fmt.Printf("%d", val)
-		// 				}
-		// 			} else {
-		// 				fmt.Printf("OOB")
-		// 			}
-		// 			if ki < k-1 {
-		// 				fmt.Printf(",")
-		// 			}
-		// 		}
-		// 		fmt.Printf("] ")
-		// 	}
-		// 	fmt.Printf("\n")
-		// }
+		if hasNonMax {
+			fmt.Printf("Node %d sketches: ", i)
+			for j := int64(0); j < nk; j++ {
+				fmt.Printf("layer%d=[", j)
+				for ki := int64(0); ki < k; ki++ {
+					idx := j*n*k + i*k + ki + currentIter*n*k*nk
+					if int64(idx) < int64(len(sketches)) {
+						val := sketches[idx]
+						if val == math.MaxUint32 {
+							fmt.Printf("MAX")
+						} else {
+							fmt.Printf("%d", val)
+						}
+					} else {
+						fmt.Printf("OOB")
+					}
+					if ki < k-1 {
+						fmt.Printf(",")
+					}
+				}
+				fmt.Printf("] ")
+			}
+			fmt.Printf("\n")
+		}
 	}
 }
 
@@ -202,33 +208,32 @@ func (sc *SketchComputer) initializeFrontier(
 				nodeHashValue[i*nk+j] = uniformValue + 1
 				frontier[i] = true
 			}
-			fmt.Printf("\n")
 		}
 	}
 	
-	// Print complete initial sketch state
-	for i := int64(0); i < n; i++ {
-		if frontier[i] {
-			fmt.Printf("Node %d sketches: ", i)
-			for j := int64(0); j < nk; j++ {
-				fmt.Printf("layer%d=[", j)
-				for ki := int64(0); ki < k; ki++ {
-					val := sketches[j*n*k+i*k+ki]
-					if val == math.MaxUint32 {
-						fmt.Printf("MAX")
-					} else {
-						fmt.Printf("%d", val)
-					}
-					if ki < k-1 {
-						fmt.Printf(",")
-					}
-				}
-				fmt.Printf("] ")
-			}
-			fmt.Printf("\n")
-		}
-	}
-	fmt.Println()
+	// // Print complete initial sketch state
+	// for i := int64(0); i < n; i++ {
+	// 	if frontier[i] {
+	// 		fmt.Printf("Node %d sketches: ", i)
+	// 		for j := int64(0); j < nk; j++ {
+	// 			fmt.Printf("layer%d=[", j)
+	// 			for ki := int64(0); ki < k; ki++ {
+	// 				val := sketches[j*n*k+i*k+ki]
+	// 				if val == math.MaxUint32 {
+	// 					fmt.Printf("MAX")
+	// 				} else {
+	// 					fmt.Printf("%d", val)
+	// 				}
+	// 				if ki < k-1 {
+	// 					fmt.Printf(",")
+	// 				}
+	// 			}
+	// 			fmt.Printf("] ")
+	// 		}
+	// 		fmt.Printf("\n")
+	// 	}
+	// }
+	// fmt.Println()
 	
 	return frontier
 }
@@ -254,4 +259,58 @@ func (sc *SketchComputer) edgeMap(G *GraphStructure, vs *VertexSubset, f *Sketch
 	}
 	
 	return NewVertexSubsetFromArray(numVertices, newFrontier)
+}
+
+func (sc *SketchComputer) edgeMapParallel(G *GraphStructure, vs *VertexSubset, f *SketchF, numWorkers int) *VertexSubset {
+    numVertices := G.n
+    m := vs.NumNonzeros()
+    
+    if m == 0 {
+        return NewVertexSubset(numVertices)
+    }
+    
+    vs.ToSparse()
+    newFrontier := make([]bool, numVertices)
+    
+    // Collect all active vertices
+    activeVertices := make([]int64, m)
+    for i := 0; i < int(m); i++ {
+        activeVertices[i] = vs.Vtx(i)
+    }
+    
+    // Divide work among workers
+    verticesPerWorker := int(m) / numWorkers
+    if verticesPerWorker == 0 {
+        verticesPerWorker = 1
+    }
+    
+    var wg sync.WaitGroup
+    for worker := 0; worker < numWorkers; worker++ {
+        start := worker * verticesPerWorker
+        end := start + verticesPerWorker
+        if worker == numWorkers-1 {
+            end = int(m)
+        }
+        
+        wg.Add(1)
+        go func(startIdx, endIdx int) {
+            defer wg.Done()
+            
+            for i := startIdx; i < endIdx; i++ {
+                v := activeVertices[i]
+                for _, neighbor := range G.V[v].neighbors {
+                    if f.Cond(neighbor) {
+                        sc.vertexMutex[neighbor].Lock()
+                        if f.Update(v, neighbor) {
+                            newFrontier[neighbor] = true
+                        }
+                        sc.vertexMutex[neighbor].Unlock()
+                    }
+                }
+            }
+        }(start, end)
+    }
+    
+    wg.Wait()
+    return NewVertexSubsetFromArray(numVertices, newFrontier)
 }

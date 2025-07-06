@@ -79,14 +79,16 @@ func (fw *FileWriter) buildStructures(result *LouvainResult, parser *GraphParser
 			}
 		} else {
 			for commID, nodes := range result.Levels[level].Communities {
+				fmt.Printf("length of nodes: %d of community %d\n", len(nodes), commID)
 				formattedID := fmt.Sprintf("c0_l%d_%d", level+1, commID)
 				fw.mapping[formattedID] = []string{}
 				fw.hierarchy[formattedID] = []string{}
 				for _, node := range nodes {
+					
 					childOriginalID := result.Levels[level-1].SuperNodeToCommMap[node]
 					formattedChildID := fmt.Sprintf("c0_l%d_%d", level, childOriginalID)
 					fw.mapping[formattedID] = append(fw.mapping[formattedID], fw.mapping[formattedChildID]...)
-					fw.hierarchy[formattedID] = append(fw.hierarchy[formattedID], formattedChildID)
+					fw.hierarchy[formattedID] = append(fw.hierarchy[formattedID], fmt.Sprintf("%d", childOriginalID))
 				}
 			}
 		}
@@ -95,13 +97,13 @@ func (fw *FileWriter) buildStructures(result *LouvainResult, parser *GraphParser
 
 	// if top level has > 1 community, merge them into a single root community
 	if len(result.Levels) > 0 && len(result.Levels[len(result.Levels)-1].Communities) > 1 {
-		rootID := fmt.Sprintf("c0_l%d_0", len(result.Levels))
+		rootID := fmt.Sprintf("c0_l%d_0", len(result.Levels)+1)
 		fw.rootID = rootID
 		fw.hierarchy[rootID] = []string{}
 		fw.mapping[rootID] = []string{}
 		for commID, _ := range result.Levels[len(result.Levels)-1].Communities {
-			formattedID := fmt.Sprintf("c0_l%d_%d", len(result.Levels)-1, commID)
-			fw.hierarchy[rootID] = append(fw.hierarchy[rootID], formattedID)
+			formattedID := fmt.Sprintf("c0_l%d_%d", len(result.Levels), commID)
+			fw.hierarchy[rootID] = append(fw.hierarchy[rootID], fmt.Sprintf("%d", commID))
 			fw.mapping[rootID] = append(fw.mapping[rootID], fw.mapping[formattedID]...)
 		}
 	} else {
@@ -165,6 +167,8 @@ func (fw *FileWriter) WriteHierarchy(result *LouvainResult, parser *GraphParser,
 		for _, child := range children {
 			fmt.Fprintf(file, "%s\n", child)
 		}
+
+		
 	}
 
 	return nil

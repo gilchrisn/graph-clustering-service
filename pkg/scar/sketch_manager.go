@@ -116,27 +116,6 @@ func (sm *SketchManager) UpdateCommunitySketch(commId int64, memberNodes []int64
 	sm.communitySketches[commId] = communitySketch
 }
 
-func (sm *SketchManager) EstimateCommunityCardinality(commId int64, memberNodes []int64) float64 {
-	communitySketch := sm.GetCommunitySketch(commId)
-	if communitySketch == nil {
-		return 0.0
-	}
-	
-	if communitySketch.IsSketchFull() {
-		return communitySketch.EstimateCardinality()
-	} else {
-		// Sum degrees of all member nodes when sketch not full
-		totalDegree := 0.0
-		for _, nodeId := range memberNodes {
-			nodeSketch := sm.GetVertexSketch(nodeId)
-			if nodeSketch != nil {
-				totalDegree += nodeSketch.EstimateCardinality()
-			}
-		}
-		return totalDegree
-	}
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a

@@ -88,6 +88,8 @@ func NewPipelineConfig() *PipelineConfig {
 			Threshold:   0.5,
 			UseLouvain:  true,
 			SketchOutput: true, // For hierarchy output compatible with PPRViz
+			WriteSketchGraph: true, // Write sketch graph files
+			SketchGraphWeights: false, // Use weights in sketch graph files
 		},
 	}
 }
@@ -258,6 +260,8 @@ func RunComparison(graphFile, propertiesFile, pathFile string, config *PipelineC
 	scarConfig := *config // Copy config
 	scarConfig.OutputDir = scarOutputDir
 	scarConfig.OutputPrefix = "scar_communities"
+	scarConfig.SCARConfig.WriteSketchGraph = true // Ensure sketch graph files are written
+	scarConfig.SCARConfig.SketchGraphWeights = false // Use unweighted sketch graph files
 	
 	scarStart := time.Now()
 	scarResult, err := RunSketchLouvain(graphFile, propertiesFile, pathFile, &scarConfig)
@@ -986,7 +990,7 @@ func RunSketchLouvain(graphFile, propertiesFile, pathFile string, config *Pipeli
 	scarConfig.PropertyFile = propertiesFile
 	scarConfig.PathFile = pathFile
 	scarConfig.Prefix = filepath.Join(config.OutputDir, config.OutputPrefix)
-	
+	scarConfig.NumWorkers = 1
 	if config.Verbose {
 		fmt.Printf("  Graph file: %s\n", graphFile)
 		fmt.Printf("  Properties file: %s\n", propertiesFile)
@@ -1081,8 +1085,20 @@ func convertHomogeneousToNormalized(hgraph *materialization.HomogeneousGraph) (*
 	for nodeID := range hgraph.Nodes {
 		nodeList = append(nodeList, nodeID)
 	}
-	sort.Strings(nodeList) // Sort for deterministic mapping
-	
+
+	// ✅ Use intelligent sorting (same as parser.go)
+	allIntegers := allNodesAreIntegers(nodeList)
+	if allIntegers {
+		// Sort numerically: 1 < 2 < 5 < 10
+		sort.Slice(nodeList, func(i, j int) bool {
+			a, _ := strconv.Atoi(nodeList[i])
+			b, _ := strconv.Atoi(nodeList[j])
+			return a < b
+		})
+	} else {
+		// Sort lexicographically: "1" < "10" < "2" < "5"
+		sort.Strings(nodeList)
+	}
 	// fmt.Println("\n=== CONVERSION PROCESS ===")
 	// fmt.Println("Node ID mapping:")
 	// for i, originalID := range nodeList {
@@ -1396,7 +1412,7 @@ func main() {
 	switch pipelineType {
 	case "mat_louvain":
 		// Configure materialization + Louvain with flags
-		config.MaterializationConfig.Aggregation.Strategy = materialization.Count
+		config.MaterializationConfig.Aggregation.Strategy = materialization.Average
 		config.MaterializationConfig.Aggregation.Symmetric = *matSymmetric
 		config.MaterializationConfig.Traversal.MaxInstances = *matMaxInstances
 		
@@ -1428,7 +1444,7 @@ func main() {
 		
 	case "compare":
 		// Configure both pipelines for comparison
-		config.MaterializationConfig.Aggregation.Strategy = materialization.Count
+		config.MaterializationConfig.Aggregation.Strategy = materialization.Average
 		config.MaterializationConfig.Aggregation.Symmetric = *matSymmetric
 		config.MaterializationConfig.Traversal.MaxInstances = *matMaxInstances
 		
@@ -1541,4 +1557,14 @@ func main() {
 		
 		fmt.Printf("Output files written to: %s/\n", config.OutputDir)
 	}
+}
+
+// Add this function near the top of your main file
+func allNodesAreIntegers(nodes []string) bool {
+	for _, node := range nodes {
+		if _, err := strconv.Atoi(node); err != nil {
+			return false
+		}
+	}
+	return true
 }

@@ -206,7 +206,7 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 	s.Iteration = 0
 
 	// Print initial state
-	s.PrintState(fmt.Sprintf("LEVEL START - Level with %d nodes", s.Graph.NumNodes), "ALL")
+	// s.PrintState(fmt.Sprintf("LEVEL START - Level with %d nodes", s.Graph.NumNodes), "ALL")
 
 	fmt.Printf("\n\n\nStarting Louvain level with %d nodes, initial modularity: %.4f\n",
 		s.Graph.NumNodes, s.GetModularity())
@@ -306,15 +306,13 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 		}
 
 		if bestComm != oldComm && bestGain > s.Config.MinModularity {
-			fmt.Printf("\n\nNode %d: moving from community %d to %d (gain: %.4f)\n",
+			fmt.Printf("Node %d: moving from community %d to %d (gain: %.4f)\n",
 				node, oldComm, bestComm, bestGain)
 
-			fmt.Printf("Internal weight before move: %.4f\n", s.In[oldComm])
 			if err := s.moveNode(node, oldComm, bestComm); err != nil {
 				fmt.Printf("Error moving node %d: %v\n", node, err)
 				continue
 			}
-			fmt.Printf("Internal weight after move: %.4f\n", s.In[oldComm])
 			if (s.In[oldComm] < 0) {
 				// Print the old community's nodes for debugging
 				fmt.Printf("Old community %d nodes: %v\n", oldComm, s.C2N[oldComm])
@@ -415,20 +413,20 @@ func (s *LouvainState) moveNode(node int, fromComm int, toComm int) error {
 		}
 	}
 
-	// Print everything for debugging
-	fmt.Printf("Moving node %d from community %d to %d: edgesToFrom: %.4f, edgesToTo: %.4f, "+
-		"nodeDegree: %.4f, fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f\n",
-		node, fromComm, toComm, weightToFrom, weightToTo, nodeDegree,
-		s.Tot[fromComm], s.Tot[toComm], s.Graph.TotalWeight)
+												// // Print everything for debugging
+												// fmt.Printf("Moving node %d from community %d to %d: edgesToFrom: %.4f, edgesToTo: %.4f, "+
+												// 	"nodeDegree: %.4f, fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f\n",
+												// 	node, fromComm, toComm, weightToFrom, weightToTo, nodeDegree,
+												// 	s.Tot[fromComm], s.Tot[toComm], s.Graph.TotalWeight)
 
-	// for each node in the old comm, print each node's degree and the weight of the edge to the moved node
-	for _, member := range s.C2N[fromComm] {
-		edgeWeight := s.Graph.GetEdgeWeight(node, member)
-		memberDegree := s.Graph.GetNodeDegree(member)
-		fmt.Printf("  Node %d -> in old community %d: degree=%.4f, edgeWeight=%.4f\n",
-			member, fromComm, memberDegree, edgeWeight)
-	}
-	fmt.Printf(" Node %d's self loop weight: %.4f\n", node, s.Graph.GetEdgeWeight(node, node))
+												// // for each node in the old comm, print each node's degree and the weight of the edge to the moved node
+												// for _, member := range s.C2N[fromComm] {
+												// 	edgeWeight := s.Graph.GetEdgeWeight(node, member)
+												// 	memberDegree := s.Graph.GetNodeDegree(member)
+												// 	fmt.Printf("  Node %d -> in old community %d: degree=%.4f, edgeWeight=%.4f\n",
+												// 		member, fromComm, memberDegree, edgeWeight)
+												// }
+												// fmt.Printf(" Node %d's self loop weight: %.4f\n", node, s.Graph.GetEdgeWeight(node, node))
 
 	// Clean up empty community
 	if len(s.C2N[fromComm]) == 0 {
@@ -564,10 +562,10 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 	// Apply your formula
 	gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
 
-// 	// Print all component for debugging
-// fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
-// 		" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
-// 		node, targetComm, edgesToTo, edgesToFrom, nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
+															// // 	// Print all component for debugging
+															fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
+																	" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+																	node, targetComm, edgesToTo, edgesToFrom, nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
 	return gain
 }
 

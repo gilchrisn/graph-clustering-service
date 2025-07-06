@@ -144,6 +144,7 @@ func (g *NormalizedGraph) AddEdge(from, to int, weight float64) {
 	}
 	
 	// Add to adjacency list
+
 	g.Adjacency[from] = append(g.Adjacency[from], to)
 	g.EdgeWeights[from] = append(g.EdgeWeights[from], weight)
 	
