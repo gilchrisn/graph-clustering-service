@@ -3,7 +3,7 @@ package scar
 import (
 	"fmt"
 	"math"
-	"time"
+	// "time"
 	"sort"
 )
 
@@ -32,15 +32,15 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 	}
 
 	// Phase 2: Run Louvain algorithm
-	startTime := time.Now()
+	// startTime := time.Now()
 
 	// Run Louvain phases
 	totalImprovement := true
 	phase := 0
 
 	for totalImprovement && phase < 10 {
-		fmt.Printf("=== Louvain Phase %d ===\n", phase)
-		sle.sketchLouvainState.PrintState(fmt.Sprintf("Phase %d", phase), "ALL")
+		// fmt.Printf("=== Louvain Phase %d ===\n", phase)
+		// sle.sketchLouvainState.PrintState(fmt.Sprintf("Phase %d", phase), "ALL")
 
 		// Phase 1: Local optimization
 		totalImprovement = false
@@ -119,7 +119,7 @@ for _, neighborComm := range sortedCommunities {
 
 				// Move node if beneficial
 				if bestCommunity != currentCommunity {
-					fmt.Printf("Node %d: moving from community %d to %d (gain: %f)\n", nodeId, currentCommunity, bestCommunity, bestGain)
+					// fmt.Printf("Node %d: moving from community %d to %d (gain: %f)\n", nodeId, currentCommunity, bestCommunity, bestGain)
 					sle.sketchLouvainState.MoveNode(nodeId, currentCommunity, bestCommunity)
 					totalImprovement = true
 					improvement = true
@@ -128,13 +128,13 @@ for _, neighborComm := range sortedCommunities {
 			}
 
 			localIter++
-			fmt.Printf("Local iter %d: %d nodes processed, %d moved\n", localIter, nodesProcessed, nodesMoved)
+			// fmt.Printf("Local iter %d: %d nodes processed, %d moved\n", localIter, nodesProcessed, nodesMoved)
 		}
 
-		fmt.Printf("\n=== HIERARCHY LEVEL %d END ===\n", phase)
-		fmt.Printf("Total improvement achieved: %t\n", totalImprovement)
+		// fmt.Printf("\n=== HIERARCHY LEVEL %d END ===\n", phase)
+		// fmt.Printf("Total improvement achieved: %t\n", totalImprovement)
 
-		fmt.Printf("Phase %d: Improvement %t\n", phase, improvement)
+		// fmt.Printf("Phase %d: Improvement %t\n", phase, improvement)
 
 		// Phase 2: Community aggregation (create super-graph)
 		sle.aggregateCommunities()
@@ -146,8 +146,8 @@ for _, neighborComm := range sortedCommunities {
 		phase++
 	}
 
-	fmt.Printf("Louvain completed in %v\n", time.Since(startTime))
-	fmt.Printf("Total hierarchy levels: %d\n", phase)
+	// fmt.Printf("Louvain completed in %v\n", time.Since(startTime))
+	// fmt.Printf("Total hierarchy levels: %d\n", phase)
 
 
 	return sle.result.WriteFiles(sle.config)
@@ -176,8 +176,8 @@ func (sle *SketchLouvainEngine) initializeGraphAndSketches() error {
 
 	// Read properties and path
 	fileReader := NewFileReader()
-	fmt.Printf("About to read properties from: '%s'\n", sle.config.PropertyFile)
-	fmt.Printf("About to read path from: '%s'\n", sle.config.PathFile)
+	// fmt.Printf("About to read properties from: '%s'\n", sle.config.PropertyFile)
+	// fmt.Printf("About to read path from: '%s'\n", sle.config.PathFile)
 
 	vertexProperties, err := fileReader.ReadProperties(sle.config.PropertyFile, n)
 	if err != nil {
@@ -362,16 +362,16 @@ func (sle *SketchLouvainEngine) calculateModularityGain(
     // gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight) 
 	gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
 	// // Print all component for debugging
-	fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
-		" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
-		nodeId, toComm, edgesToTo, edgesToFrom,	 nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
+	// fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
+	// 	" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+	// 	nodeId, toComm, edgesToTo, edgesToFrom,	 nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
 
 	
 	return gain
 }
 
 func (sle *SketchLouvainEngine) aggregateCommunities() error {
-	fmt.Println("\n=== COMMUNITY AGGREGATION PHASE ===")
+	// fmt.Println("\n=== COMMUNITY AGGREGATION PHASE ===")
 
 	// Step 1: Get current state before aggregation
 	prevState := sle.sketchLouvainState  // SAVE THE PREVIOUS STATE HERE
@@ -456,7 +456,7 @@ func (sle *SketchLouvainEngine) aggregateCommunities() error {
 	// Step 10: Calculate total weight of the super-graph
 	sle.sketchLouvainState.CalculateWholeWeight()
 
-	fmt.Println("Super-graph community manager initialized")
+	// fmt.Println("Super-graph community manager initialized")
 
 	return nil
 }
