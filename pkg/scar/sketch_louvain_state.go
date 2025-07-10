@@ -39,6 +39,11 @@ type WeightedEdge struct {
     neighbor int64
     weight   float64
 }
+
+func (we WeightedEdge) GetNeighbor() int64 {
+	return we.neighbor
+}
+
 // Get community ID for a node
 func (sls *SketchLouvainState) GetNodeCommunity(nodeId int64) int64 {
 	if nodeId >= int64(len(sls.nodeToCommunity)) {
@@ -65,6 +70,11 @@ func (sls *SketchLouvainState) GetCommunityToNodesMap() map[int64][]int64 {
 // Get all active communities
 func (sls *SketchLouvainState) GetActiveCommunities() map[int64]bool {
 	return sls.activeCommunities
+}
+
+// GetSketchAdjacencyList returns the adjacency list for sketch neighbors
+func (sls *SketchLouvainState) GetSketchAdjacencyList() map[int64][]WeightedEdge {
+	return sls.sketchAdjacencyList
 }
 
 // GetVertexSketch returns the sketch for a specific node
@@ -520,29 +530,29 @@ func (sls *SketchLouvainState) BuildSuperNodeAdjacencyFromPreviousLevel(
 		}
 	}
 	
-	fmt.Printf("Super-node adjacency built: %d nodes with edges\n", len(sls.sketchAdjacencyList))
-	for nodeId, edges := range sls.sketchAdjacencyList {
-		if len(edges) > 0 {
-			fmt.Printf("  Node %d: %d neighbors\n", nodeId, len(edges))
-			if len(edges) > 20 {
-				fmt.Printf("    Neighbors: ")
-				for i, edge := range edges {
-					if i >= 5 {
-						fmt.Printf("...+%d more", len(edges)-5)
-						break
-					}
-					fmt.Printf("(%d,%.1f) ", edge.neighbor, edge.weight)
-				}
-				fmt.Println()
-			} else {
-				fmt.Printf("    Neighbors: ")
-				for _, edge := range edges {
-					fmt.Printf("(%d,%.1f) ", edge.neighbor, edge.weight)
-				}
-				fmt.Println()	
-			}
-		}
-	}
+	// fmt.Printf("Super-node adjacency built: %d nodes with edges\n", len(sls.sketchAdjacencyList))
+	// for nodeId, edges := range sls.sketchAdjacencyList {
+	// 	if len(edges) > 0 {
+	// 		fmt.Printf("  Node %d: %d neighbors\n", nodeId, len(edges))
+	// 		if len(edges) > 20 {
+	// 			fmt.Printf("    Neighbors: ")
+	// 			for i, edge := range edges {
+	// 				if i >= 5 {
+	// 					fmt.Printf("...+%d more", len(edges)-5)
+	// 					break
+	// 				}
+	// 				fmt.Printf("(%d,%.1f) ", edge.neighbor, edge.weight)
+	// 			}
+	// 			fmt.Println()
+	// 		} else {
+	// 			fmt.Printf("    Neighbors: ")
+	// 			for _, edge := range edges {
+	// 				fmt.Printf("(%d,%.1f) ", edge.neighbor, edge.weight)
+	// 			}
+	// 			fmt.Println()	
+	// 		}
+	// 	}
+	// }
 	return nil
 }
 

@@ -118,7 +118,7 @@ func (slr *SketchLouvainResult) writeSketchGraphFiles(config SCARConfig) error {
 }
 
 func (slr *SketchLouvainResult) writeEdgeListFile(config SCARConfig, adjacencyList map[int64][]WeightedEdge) error {
-	filename := fmt.Sprintf("%s.edgelist", config.Prefix)
+	filename := fmt.Sprintf("%s_graph.txt", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -158,7 +158,7 @@ func (slr *SketchLouvainResult) writeEdgeListFile(config SCARConfig, adjacencyLi
 }
 
 func (slr *SketchLouvainResult) writeAttributesFile(config SCARConfig, adjacencyList map[int64][]WeightedEdge) error {
-	filename := fmt.Sprintf("%s.attributes", config.Prefix)
+	filename := fmt.Sprintf("%s_attributes.txt", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -333,7 +333,7 @@ func (slr *SketchLouvainResult) getFinalPartitionToOriginalNodes() []int64 {
 
 // writeMappingFile writes the mapping from communities to original nodes
 func (slr *SketchLouvainResult) writeMappingFile(config SCARConfig) error {
-	filename := fmt.Sprintf("%s.mapping", config.Prefix)
+	filename := fmt.Sprintf("%s_mapping.dat", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -367,7 +367,7 @@ func (slr *SketchLouvainResult) writeMappingFile(config SCARConfig) error {
 
 // writeHierarchyFile writes the hierarchical community structure
 func (slr *SketchLouvainResult) writeHierarchyFile(config SCARConfig) error {
-	filename := fmt.Sprintf("%s.hierarchy", config.Prefix)
+	filename := fmt.Sprintf("%s_hierarchy.dat", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -401,7 +401,7 @@ func (slr *SketchLouvainResult) writeHierarchyFile(config SCARConfig) error {
 
 // writeRootFile writes the root community identifier
 func (slr *SketchLouvainResult) writeRootFile(config SCARConfig) error {
-	filename := fmt.Sprintf("%s.root", config.Prefix)
+	filename := fmt.Sprintf("%s_root.dat", config.Prefix)
 	file, err := os.Create(filename)
 	if err != nil {
 		return err

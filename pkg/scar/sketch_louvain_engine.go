@@ -25,7 +25,7 @@ func NewSketchLouvainEngine(config SCARConfig) *SketchLouvainEngine {
 func (sle *SketchLouvainEngine) RunLouvain() error {
 
 	// Phase 1: Initialize graph, sketches and result
-	err := sle.initializeGraphAndSketches()
+	err := sle.InitializeGraphAndSketches()
 
 	if err != nil {
 		return err
@@ -38,7 +38,7 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 	totalImprovement := true
 	phase := 0
 
-	for totalImprovement && phase < 10 {
+	for totalImprovement && phase < 3 {
 		// fmt.Printf("=== Louvain Phase %d ===\n", phase)
 		// sle.sketchLouvainState.PrintState(fmt.Sprintf("Phase %d", phase), "ALL")
 
@@ -100,17 +100,19 @@ sort.Slice(sortedCommunities, func(i, j int) bool {
 
 // Calculate gain for moving to each neighboring community
 bestCommunity := currentCommunity
-bestGain := 0.0
+bestGain := sle.calculateModularityGain(nodeId, currentCommunity, neighborCommunities[currentCommunity])
 for _, neighborComm := range sortedCommunities {
-    if neighborComm == currentCommunity {
-        continue
-    }
+	if neighborComm == currentCommunity {
+		continue
+	}
+
 
     // Use the weight from FindNeighboringCommunities
     edgesToComm := neighborCommunities[neighborComm]
     gain := sle.calculateModularityGain(nodeId, neighborComm, edgesToComm)
 
     if gain > bestGain {
+
         bestGain = gain
         bestCommunity = neighborComm
     }
@@ -119,7 +121,7 @@ for _, neighborComm := range sortedCommunities {
 
 				// Move node if beneficial
 				if bestCommunity != currentCommunity {
-					// fmt.Printf("Node %d: moving from community %d to %d (gain: %f)\n", nodeId, currentCommunity, bestCommunity, bestGain)
+					fmt.Printf("Node %d: moving from community %d to %d (gain: %f)\n", nodeId, currentCommunity, bestCommunity, bestGain)
 					sle.sketchLouvainState.MoveNode(nodeId, currentCommunity, bestCommunity)
 					totalImprovement = true
 					improvement = true
@@ -153,8 +155,8 @@ for _, neighborComm := range sortedCommunities {
 	return sle.result.WriteFiles(sle.config)
 }
 
-// initializeGraphAndSketches reads graph and computes initial sketches
-func (sle *SketchLouvainEngine) initializeGraphAndSketches() error {
+// InitializeGraphAndSketches reads graph and computes initial sketches
+func (sle *SketchLouvainEngine) InitializeGraphAndSketches() error {
 	// Read graph
 	graphReader := NewGraphReader()
 	graph, err := graphReader.ReadFromFile(sle.config.GraphFile)
@@ -353,18 +355,27 @@ func (sle *SketchLouvainEngine) calculateModularityGain(
 	// Estimate degree of the node
 	nodeDegree := sle.sketchLouvainState.EstimateCardinality(nodeId)
 
-	edgesToFrom := sle.sketchLouvainState.EstimateEdgesToCommunity(nodeId, sle.sketchLouvainState.GetNodeCommunity(nodeId))
-	fromCommDegree := sle.sketchLouvainState.EstimateCommunityCardinality(sle.sketchLouvainState.GetNodeCommunity(nodeId))
+	// edgesToFrom := sle.sketchLouvainState.EstimateEdgesToCommunity(nodeId, sle.sketchLouvainState.GetNodeCommunity(nodeId))
+	// fromCommDegree := sle.sketchLouvainState.EstimateCommunityCardinality(sle.sketchLouvainState.GetNodeCommunity(nodeId))
 
 	// Estimate community degrees
 	toCommDegree := sle.sketchLouvainState.EstimateCommunityCardinality(toComm)
 
-    // gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight) 
-	gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
-	// // Print all component for debugging
+    // // gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight) 
+	// gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
+	// // // Print all component for debugging
 	// fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
 	// 	" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
 	// 	nodeId, toComm, edgesToTo, edgesToFrom,	 nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
+
+	gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
+	// Print all components for debugging
+	if true {
+		fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, "+
+			" nodeDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+			nodeId, toComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight, gain)		
+	}
+
 
 	
 	return gain
@@ -472,4 +483,11 @@ func (sle *SketchLouvainEngine) recordCurrentLevel(
 	hashMap := sle.sketchLouvainState.sketchManager.hashToNodeMap
 
 	sle.result.AddLevel(community, sketches, hashMap, communityToNodes, commToNewNode, sketchAdjacencyList)
+}
+
+
+
+// GetSketchLouvainState returns the current state of the SketchLouvainEngine
+func (sle *SketchLouvainEngine) GetSketchLouvainState() *SketchLouvainState {
+	return sle.sketchLouvainState
 }

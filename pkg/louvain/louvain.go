@@ -7,22 +7,23 @@ import (
 	"time"
 	"strings"
 	"sort"
+	// "math"
 )
 
 // RunLouvain executes the complete Louvain algorithm on normalized graph
 func RunLouvain(graph *NormalizedGraph, config LouvainConfig) (*LouvainResult, error) {
 	startTime := time.Now()
 	
-	//Print full graph structure
-	fmt.Println("Graph structure (edges):")
-	for i := 0; i < graph.NumNodes; i++ {
-		neighbors := graph.GetNeighbors(i)
-		fmt.Printf("Node %d: ", i)
-		for neighbor, weight := range neighbors {
-			fmt.Printf("(%d, %.2f) ", neighbor, weight)
-		}
-		fmt.Println()
-	}
+	// //Print full graph structure
+	// fmt.Println("Graph structure (edges):")
+	// for i := 0; i < graph.NumNodes; i++ {
+	// 	neighbors := graph.GetNeighbors(i)
+	// 	fmt.Printf("Node %d: ", i)
+	// 	for neighbor, weight := range neighbors {
+	// 		fmt.Printf("(%d, %.2f) ", neighbor, weight)
+	// 	}
+	// 	fmt.Println()
+	// }
 
 	// Validate input
 	if err := graph.Validate(); err != nil {
@@ -50,7 +51,7 @@ func RunLouvain(graph *NormalizedGraph, config LouvainConfig) (*LouvainResult, e
 	improvement := true
 	
 	// Main loop
-	for improvement && level < config.MaxIterations {
+	for improvement && level < 3 {
 		levelStart := time.Now()
 		
 		if config.ProgressCallback != nil {
@@ -282,13 +283,18 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 		
 		// Find best community
 		bestComm := oldComm
-		bestGain := 0.0
 		
+		edgeToFrom := 0.0 
+		for _, member := range s.C2N[oldComm] {
+			edgeToFrom += s.Graph.GetEdgeWeight(node, member)
+		}
+
+		bestGain := s.modularityGain(node, oldComm, edgeToFrom)
+
 		for _, nc := range neighborComms {
 			if nc.Community == oldComm {
 				continue
 			}
-
 			// Check size constraint
 			if s.Config.MaxCommunitySize > 0 {
 				currentSize := len(s.C2N[nc.Community])
@@ -300,27 +306,20 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 			gain := s.modularityGain(node, nc.Community, nc.Weight)
 
 			if gain > bestGain {
+				fmt.Printf("Node %d: found better community %d (gain: %.4f)\n", node, nc.Community, gain)
 				bestComm = nc.Community
 				bestGain = gain
 			}
 		}
 
-		if bestComm != oldComm && bestGain > s.Config.MinModularity {
+		// if bestComm != oldComm && bestGain > s.Config.MinModularity {
+		if bestComm != oldComm {
 			fmt.Printf("Node %d: moving from community %d to %d (gain: %.4f)\n",
 				node, oldComm, bestComm, bestGain)
 
 			if err := s.moveNode(node, oldComm, bestComm); err != nil {
 				fmt.Printf("Error moving node %d: %v\n", node, err)
 				continue
-			}
-			if (s.In[oldComm] < 0) {
-				// Print the old community's nodes for debugging
-				fmt.Printf("Old community %d nodes: %v\n", oldComm, s.C2N[oldComm])
-				// Print the new community's nodes for debugging
-				fmt.Printf("New community %d nodes: %v\n", bestComm, s.C2N[bestComm])
-				fmt.Printf("Number of nodes in current state: %d\n", len(s.N2C))
-				// 
-				panic(fmt.Sprintf("Community %d has negative internal weight after move of node %d to %d", oldComm, node, bestComm))
 			}
 			moves++
 		}
@@ -347,10 +346,8 @@ func (s *LouvainState) getNeighborCommunities(node int) []NeighborWeight {
 	neighbors := s.Graph.GetNeighbors(node)
 	
 	for neighbor, weight := range neighbors {
-		if neighbor != node {
-			comm := s.N2C[neighbor]
-			commWeights[comm] += weight
-		}
+		comm := s.N2C[neighbor]
+		commWeights[comm] += weight
 	}
 	
 	// Convert to slice
@@ -423,7 +420,7 @@ func (s *LouvainState) moveNode(node int, fromComm int, toComm int) error {
 												// for _, member := range s.C2N[fromComm] {
 												// 	edgeWeight := s.Graph.GetEdgeWeight(node, member)
 												// 	memberDegree := s.Graph.GetNodeDegree(member)
-												// 	fmt.Printf("  Node %d -> in old community %d: degree=%.4f, edgeWeight=%.4f\n",
+													// fmt.Printf("  Node %d -> in old community %d: degree=%.4f, edgeWeight=%.4f\n",
 												// 		member, fromComm, memberDegree, edgeWeight)
 												// }
 												// fmt.Printf(" Node %d's self loop weight: %.4f\n", node, s.Graph.GetEdgeWeight(node, node))
@@ -450,12 +447,12 @@ func (s *LouvainState) moveNode(node int, fromComm int, toComm int) error {
 // func (s *LouvainState) removeNodeFromCommunity(node int, comm int) {
 // 	// Validate inputs
 // 	if node < 0 || node >= s.Graph.NumNodes {
-// 		fmt.Printf("ERROR: Attempting to remove invalid node %d\n", node)
+		// fmt.Printf("ERROR: Attempting to remove invalid node %d\n", node)
 // 		return
 // 	}
 	
 // 	if s.N2C[node] != comm {
-// 		fmt.Printf("ERROR: Node %d is in community %d, not %d\n", node, s.N2C[node], comm)
+		// fmt.Printf("ERROR: Node %d is in community %d, not %d\n", node, s.N2C[node], comm)
 // 		return
 // 	}
 
@@ -483,7 +480,7 @@ func (s *LouvainState) moveNode(node int, fromComm int, toComm int) error {
 // 	}
 	
 // 	if !nodeFound {
-// 		fmt.Printf("ERROR: Node %d not found in C2N[%d]\n", node, comm)
+		// fmt.Printf("ERROR: Node %d not found in C2N[%d]\n", node, comm)
 // 		return
 // 	}
 	
@@ -501,12 +498,12 @@ func (s *LouvainState) moveNode(node int, fromComm int, toComm int) error {
 // func (s *LouvainState) insertNodeIntoCommunity(node int, comm int) {
 // 	// Validate inputs
 // 	if node < 0 || node >= s.Graph.NumNodes {
-// 		fmt.Printf("ERROR: Attempting to insert invalid node %d\n", node)
+		// fmt.Printf("ERROR: Attempting to insert invalid node %d\n", node)
 // 		return
 // 	}
 	
 // 	if s.N2C[node] != -1 {
-// 		fmt.Printf("ERROR: Node %d already assigned to community %d\n", node, s.N2C[node])
+		// fmt.Printf("ERROR: Node %d already assigned to community %d\n", node, s.N2C[node])
 // 		return
 // 	}
 
@@ -529,14 +526,9 @@ func (s *LouvainState) moveNode(node int, fromComm int, toComm int) error {
 
 // Temporary modularityGain function
 func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) float64 {
-	currentComm := s.N2C[node]
-	if currentComm == targetComm {
-		return 0.0
-	}
-
 	// Calculate edgesToTo (edges from node to target community)
 	edgesToTo := k_i_in  // This is passed as parameter
-
+	
 	// Get other variables
 	nodeDegree := s.Graph.GetNodeDegree(node)
 	toCommDegree := 0.0
@@ -546,26 +538,37 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 		}
 	}
 	wholeWeight := s.Graph.TotalWeight
-
-	fromCommDegree := 0.0
-	if currentComm >= 0 {
-		if tot, exists := s.Tot[currentComm]; exists {
-			fromCommDegree = tot
-		}
-	}
-
-	edgesToFrom := 0.0
-	for _, member := range s.C2N[currentComm] {
-		edgesToFrom += s.Graph.GetEdgeWeight(node, member)
-	}
 	
-	// Apply your formula
-	gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
+	// fromCommDegree := 0.0
+	// if currentComm >= 0 {
+		// 	if tot, exists := s.Tot[currentComm]; exists {
+			// 		fromCommDegree = tot
+			// 	}
+			// }
+			
+			// edgesToFrom := 0.0
+			// for _, member := range s.C2N[currentComm] {
+				// 	edgesToFrom += s.Graph.GetEdgeWeight(node, member)
+				// }
+				
+				// // Apply your formula
+				// gain := edgesToTo - edgesToFrom + nodeDegree * (fromCommDegree - toCommDegree - nodeDegree) / (2 * wholeWeight)
+				
+				// 														// // 	// Print all component for debugging
+				// 														fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
+				// 																" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+				// 																node, targetComm, edgesToTo, edgesToFrom, nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
+				
+				gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
+				
+				if true {
+					fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, nodeDegree: %.4f, "+
+					"toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+					node, targetComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight, gain)
+				}
+				
+	
 
-															// // 	// Print all component for debugging
-															fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, edgesToFrom: %.4f, nodeDegree: %.4f, "+
-																	" fromCommDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
-																	node, targetComm, edgesToTo, edgesToFrom, nodeDegree, fromCommDegree, toCommDegree, wholeWeight, gain)
 	return gain
 }
 
@@ -703,7 +706,11 @@ func (s *LouvainState) CreateSuperGraph() (*NormalizedGraph, map[int][]int, map[
 			}
 			
 			// Accumulate the edge weight
-			superEdgeWeights[edgeKey] += edgeWeight
+			if (nodeJ == nodeI) {
+				superEdgeWeights[edgeKey] += 2 * edgeWeight // Self-loops count double
+			} else {
+				superEdgeWeights[edgeKey] += edgeWeight // Regular edges
+			}
 		}
 	}
 	

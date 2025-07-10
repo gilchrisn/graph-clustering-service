@@ -83,7 +83,7 @@ func NewPipelineConfig() *PipelineConfig {
 		
 		// Default SCAR config
 		SCARConfig: scar.SCARConfig{
-			K:           64,
+			K:           1024,
 			NK:          4,
 			Threshold:   0.5,
 			UseLouvain:  true,
