@@ -20,6 +20,7 @@ import (
 	"github.com/gilchrisn/graph-clustering-service/pkg/materialization"
 	"github.com/gilchrisn/graph-clustering-service/pkg/louvain"
 	"github.com/gilchrisn/graph-clustering-service/pkg/scar"
+	"github.com/gilchrisn/graph-clustering-service/pkg/parser"
 )
 
 // Simple data structures
@@ -268,105 +269,99 @@ func runScar(graphFile, propertiesFile, pathFile, outputDir string) error {
 // ===== HIERARCHY PARSING =====
 
 func parseMaterializationHierarchy(clusteringDir, hierarchyDir string) (int, error) {
-	// TODO: Replace with your actual hierarchy parser
-	
-	// Read the Louvain files and convert to simple level files
-	mappingFile := filepath.Join(clusteringDir, "communities.mapping")
+	// Build file paths - materialization uses standard names
 	edgelistFile := filepath.Join(clusteringDir, "materialized_graph.edgelist")
-
-	// Parse mapping to understand levels
-	mapping, err := parseMapping(mappingFile)
-	if err != nil {
-		return 0, err
+	mappingFile := filepath.Join(clusteringDir, "communities.mapping")
+	hierarchyFile := filepath.Join(clusteringDir, "communities.hierarchy") 
+	rootFile := filepath.Join(clusteringDir, "communities.root")
+	
+	// Check if files exist
+	if err := checkRequiredFiles(edgelistFile, mappingFile, hierarchyFile, rootFile); err != nil {
+		return 0, fmt.Errorf("required files missing: %w", err)
 	}
-
-	// Find max level
+	
+	// Call parser - it creates files as {outputPrefix}_level_{N}.txt
+	outputPrefix := filepath.Join(hierarchyDir, "hierarchy")
+	err := parser.ParseLouvainHierarchy(edgelistFile, mappingFile, hierarchyFile, rootFile, outputPrefix)
+	if err != nil {
+		return 0, fmt.Errorf("ParseLouvainHierarchy failed: %w", err)
+	}
+	
+	// Rename .txt files to .edgelist and count levels
 	maxLevel := 0
-	for communityID := range mapping {
-		level := extractLevel(communityID)
-		if level > maxLevel {
-			maxLevel = level
+	for {
+		sourceFile := fmt.Sprintf("%s_level_%d.txt", outputPrefix, maxLevel)
+		targetFile := filepath.Join(hierarchyDir, fmt.Sprintf("level_%d.edgelist", maxLevel))
+		
+		if _, err := os.Stat(sourceFile); os.IsNotExist(err) {
+			break
 		}
-	}
-
-	// Load original edges
-	originalEdges, err := loadEdges(edgelistFile)
-	if err != nil {
-		return 0, err
-	}
-
-	// Generate level 0 (original graph)
-	level0Path := filepath.Join(hierarchyDir, "level_0.edgelist")
-	err = saveEdges(originalEdges, level0Path)
-	if err != nil {
-		return 0, err
-	}
-	fmt.Printf("   Level 0: %d edges\n", len(originalEdges))
-
-	// Generate higher levels by aggregating edges
-	for level := 1; level <= maxLevel; level++ {
-		levelEdges := aggregateEdges(originalEdges, mapping, level)
-		levelPath := filepath.Join(hierarchyDir, fmt.Sprintf("level_%d.edgelist", level))
-		err = saveEdges(levelEdges, levelPath)
+		
+		err := os.Rename(sourceFile, targetFile)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("failed to rename %s to %s: %w", sourceFile, targetFile, err)
 		}
-		fmt.Printf("   Level %d: %d edges\n", level, len(levelEdges))
+		maxLevel++
 	}
-
-	return maxLevel, nil
+	
+	if maxLevel == 0 {
+		return 0, fmt.Errorf("no level files were created")
+	}
+	
+	return maxLevel - 1, nil
 }
 
 func parseScarHierarchy(clusteringDir, hierarchyDir string) (int, error) {
-	// TODO: Replace with your actual SCAR hierarchy parser
+	// Build file paths - SCAR uses .dat extensions
+	sketchFile := filepath.Join(clusteringDir, "communities.sketch")
+	mappingFile := filepath.Join(clusteringDir, "communities_mapping.dat")  // Note: different name
+	hierarchyFile := filepath.Join(clusteringDir, "communities_hierarchy.dat")  // Note: different name
+	rootFile := filepath.Join(clusteringDir, "communities_root.dat")  // Note: different name
 	
-	// For now, use same logic as materialization but with different file names
-	mappingFile := filepath.Join(clusteringDir, "communities_mapping.dat")
-	
-	// We need to reconstruct the original graph from SCAR sketch
-	// For now, create a dummy edgelist
-	dummyEdges := []Edge{
-		{From: "1", To: "2", Weight: 1.0},
-		{From: "2", To: "3", Weight: 1.0},
-		{From: "3", To: "1", Weight: 1.0},
-		{From: "4", To: "1", Weight: 1.0},
+	// Check if files exist
+	if err := checkRequiredFiles(sketchFile, mappingFile, hierarchyFile, rootFile); err != nil {
+		return 0, fmt.Errorf("required files missing: %w", err)
 	}
-
-	// Parse mapping to understand levels
-	mapping, err := parseMapping(mappingFile)
+	
+	// Call parser - it creates files as {outputPrefix}_level_{N}.txt  
+	outputPrefix := filepath.Join(hierarchyDir, "sketch_hierarchy")
+	err := parser.ParseSketchLouvainHierarchy(sketchFile, mappingFile, hierarchyFile, rootFile, outputPrefix)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ParseSketchLouvainHierarchy failed: %w", err)
 	}
-
-	// Find max level
+	
+	// Rename .txt files to .edgelist and count levels
 	maxLevel := 0
-	for communityID := range mapping {
-		level := extractLevel(communityID)
-		if level > maxLevel {
-			maxLevel = level
+	for {
+		sourceFile := fmt.Sprintf("%s_level_%d.txt", outputPrefix, maxLevel)
+		targetFile := filepath.Join(hierarchyDir, fmt.Sprintf("level_%d.edgelist", maxLevel))
+		
+		if _, err := os.Stat(sourceFile); os.IsNotExist(err) {
+			break
 		}
-	}
-
-	// Generate level 0 (reconstructed from sketch)
-	level0Path := filepath.Join(hierarchyDir, "level_0.edgelist")
-	err = saveEdges(dummyEdges, level0Path)
-	if err != nil {
-		return 0, err
-	}
-	fmt.Printf("   Level 0: %d edges\n", len(dummyEdges))
-
-	// Generate higher levels
-	for level := 1; level <= maxLevel; level++ {
-		levelEdges := aggregateEdges(dummyEdges, mapping, level)
-		levelPath := filepath.Join(hierarchyDir, fmt.Sprintf("level_%d.edgelist", level))
-		err = saveEdges(levelEdges, levelPath)
+		
+		err := os.Rename(sourceFile, targetFile)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("failed to rename %s to %s: %w", sourceFile, targetFile, err)
 		}
-		fmt.Printf("   Level %d: %d edges\n", level, len(levelEdges))
+		maxLevel++
 	}
+	
+	if maxLevel == 0 {
+		return 0, fmt.Errorf("no level files were created")
+	}
+	
+	return maxLevel - 1, nil
+}
 
-	return maxLevel, nil
+// Helper function to check if required files exist
+func checkRequiredFiles(filenames ...string) error {
+	for _, filename := range filenames {
+		if _, err := os.Stat(filename); os.IsNotExist(err) {
+			return fmt.Errorf("file does not exist: %s", filename)
+		}
+	}
+	return nil
 }
 
 // ===== VISUALIZATION GENERATION =====
