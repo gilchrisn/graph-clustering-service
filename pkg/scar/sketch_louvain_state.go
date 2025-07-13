@@ -4,7 +4,7 @@ package scar
 
 import (
 	"fmt"
-	"sync"
+	// "sync"
 	"sort"
 	"strings"
 	"math"
@@ -221,6 +221,16 @@ func (sls *SketchLouvainState) EstimateEdgesBetweenCommunities(nodeId, targetCom
 func (sls *SketchLouvainState) FindNeighboringCommunities(nodeId int64) map[int64]float64 {
 	neighborComms := make(map[int64]float64)
 	
+	// If sketch is full, just return all existing communities
+	sketch := sls.sketchManager.GetVertexSketch(nodeId)
+	if sketch != nil && sketch.IsSketchFull() {
+		// Iterate over all communities
+		for commId := range sls.activeCommunities {
+			neighborComms[commId] = sls.EstimateEdgesToCommunity(nodeId, commId)
+		}
+		return neighborComms
+	}
+
 	// Get neighbors from the sketch adjacency list
 	neighbors := sls.GetSketchNeighbors(nodeId)
 	for _, edge := range neighbors {
@@ -342,65 +352,65 @@ func (sls *SketchLouvainState) BuildSketchAdjacencyList(numWorkers int) {
 		sls.sketchAdjacencyList[nodeId] = weightedEdges
 	}
 	
-	// Phase 2: Handle full sketches with parallelization (existing approach)
-	reverseMap := make(map[uint32][]int64)
-	var reverseMapMutex sync.Mutex  // ONE mutex for the entire map
+	// // Phase 2: Handle full sketches with parallelization
+	// reverseMap := make(map[uint32][]int64)
+	// var reverseMapMutex sync.Mutex  // ONE mutex for the entire map
 	
-	var wg sync.WaitGroup
-	nodesPerWorker := len(fullNodes) / numWorkers
-	if nodesPerWorker == 0 {
-		nodesPerWorker = 1
-	}
+	// var wg sync.WaitGroup
+	// nodesPerWorker := len(fullNodes) / numWorkers
+	// if nodesPerWorker == 0 {
+	// 	nodesPerWorker = 1
+	// }
 	
-	for worker := 0; worker < numWorkers; worker++ {
-		start := worker * nodesPerWorker
-		end := start + nodesPerWorker
-		if worker == numWorkers-1 {
-			end = len(fullNodes) // Last worker handles remaining nodes
-		}
+	// for worker := 0; worker < numWorkers; worker++ {
+	// 	start := worker * nodesPerWorker
+	// 	end := start + nodesPerWorker
+	// 	if worker == numWorkers-1 {
+	// 		end = len(fullNodes) // Last worker handles remaining nodes
+	// 	}
 		
-		wg.Add(1)
-		go func(startIdx, endIdx int) {
-			defer wg.Done()
+	// 	wg.Add(1)
+	// 	go func(startIdx, endIdx int) {
+	// 		defer wg.Done()
 			
-			for i := startIdx; i < endIdx; i++ {
-				nodeId := fullNodes[i]
-				sketch := sls.sketchManager.GetVertexSketch(nodeId)
-				if sketch == nil {
-					continue
-				}
+	// 		for i := startIdx; i < endIdx; i++ {
+	// 			nodeId := fullNodes[i]
+	// 			sketch := sls.sketchManager.GetVertexSketch(nodeId)
+	// 			if sketch == nil {
+	// 				continue
+	// 			}
 				
-				// Get hashes from first layer only
-				layerHashes := sketch.GetLayerHashes(0)
+	// 			// Get hashes from first layer only
+	// 			layerHashes := sketch.GetLayerHashes(0)
 				
-				for _, hash := range layerHashes {
-					// Use single mutex for entire map
-					reverseMapMutex.Lock()
-					reverseMap[hash] = append(reverseMap[hash], nodeId)
-					reverseMapMutex.Unlock()
-				}
-			}
-		}(start, end)
-	}
+	// 			for _, hash := range layerHashes {
+	// 				// Use single mutex for entire map
+	// 				reverseMapMutex.Lock()
+	// 				reverseMap[hash] = append(reverseMap[hash], nodeId)
+	// 				reverseMapMutex.Unlock()
+	// 			}
+	// 		}
+	// 	}(start, end)
+	// }
 	
-	wg.Wait()
+	// wg.Wait()
 	
-	// Build adjacency lists for full sketches (sequential)
-	for _, nodes := range reverseMap {
-		if len(nodes) < 2 {
-			continue
-		}
+	// // Build adjacency lists for full sketches (sequential)
+	// for _, nodes := range reverseMap {
+	// 	if len(nodes) < 2 {
+	// 		continue
+	// 	}
 		
-		for i := 0; i < len(nodes); i++ {
-			for j := i + 1; j < len(nodes); j++ {
-				u, v := nodes[i], nodes[j]
-				weight := 1.0
+	// 	for i := 0; i < len(nodes); i++ {
+	// 		for j := i + 1; j < len(nodes); j++ {
+	// 			u, v := nodes[i], nodes[j]
+	// 			weight := 1.0
 				
-				sls.sketchAdjacencyList[u] = append(sls.sketchAdjacencyList[u], WeightedEdge{neighbor: v, weight: weight})
-				sls.sketchAdjacencyList[v] = append(sls.sketchAdjacencyList[v], WeightedEdge{neighbor: u, weight: weight})
-			}
-		}
-	}
+	// 			sls.sketchAdjacencyList[u] = append(sls.sketchAdjacencyList[u], WeightedEdge{neighbor: v, weight: weight})
+	// 			sls.sketchAdjacencyList[v] = append(sls.sketchAdjacencyList[v], WeightedEdge{neighbor: u, weight: weight})
+	// 		}
+	// 	}
+	// }
 	
 }
 
@@ -472,47 +482,47 @@ func (sls *SketchLouvainState) BuildSuperNodeAdjacencyFromPreviousLevel(
 		}
 	}
 	
-	// Process full sketch communities (estimation method)
-	for i, communityA := range fullCommunities {
-		for j, communityB := range fullCommunities {
-			if i > j {
-				continue // Skip duplicate pairs
-			}
+	// // Process full sketch communities (estimation method)
+	// for i, communityA := range fullCommunities {
+	// 	for j, communityB := range fullCommunities {
+	// 		if i > j {
+	// 			continue // Skip duplicate pairs
+	// 		}
 			
-			superNodeA := communityMapping[communityA]
-			superNodeB := communityMapping[communityB]
+	// 		superNodeA := communityMapping[communityA]
+	// 		superNodeB := communityMapping[communityB]
 			
-			// Check if they are neighbors using sketch intersection
-			areNeighbors := false
-			if communityA == communityB {
-				areNeighbors = true // Self-loop
-			} else {
-				// Check sketch intersection like leaf level
-				sketchA := prevState.GetCommunitySketch(communityA)
-				sketchB := prevState.GetCommunitySketch(communityB)
-				if sketchA != nil && sketchB != nil {
-					intersection := sketchA.IntersectWith(sketchB)
-					areNeighbors = len(intersection) > 0
-				}
-			}
+	// 		// Check if they are neighbors using sketch intersection
+	// 		areNeighbors := false
+	// 		if communityA == communityB {
+	// 			areNeighbors = true // Self-loop
+	// 		} else {
+	// 			// Check sketch intersection like leaf level
+	// 			sketchA := prevState.GetCommunitySketch(communityA)
+	// 			sketchB := prevState.GetCommunitySketch(communityB)
+	// 			if sketchA != nil && sketchB != nil {
+	// 				intersection := sketchA.IntersectWith(sketchB)
+	// 				areNeighbors = len(intersection) > 0
+	// 			}
+	// 		}
 			
-			if !areNeighbors {
-				continue
-			}
+	// 		if !areNeighbors {
+	// 			continue
+	// 		}
 			
-			// Estimate edges between communities
-			edges := prevState.EstimateEdgesBetweenCommunities(communityA, communityB)
+	// 		// Estimate edges between communities
+	// 		edges := prevState.EstimateEdgesBetweenCommunities(communityA, communityB)
 			
-			if edges > 0 {
-				if communityA == communityB {
-					adjacency[superNodeA][superNodeA] += edges
-				} else {
-					adjacency[superNodeA][superNodeB] += edges
-					adjacency[superNodeB][superNodeA] += edges
-				}
-			}
-		}
-	}
+	// 		if edges > 0 {
+	// 			if communityA == communityB {
+	// 				adjacency[superNodeA][superNodeA] += edges
+	// 			} else {
+	// 				adjacency[superNodeA][superNodeB] += edges
+	// 				adjacency[superNodeB][superNodeA] += edges
+	// 			}
+	// 		}
+	// 	}
+	// }
 	
 	// Convert to WeightedEdge format
 	for superNodeA, neighbors := range adjacency {

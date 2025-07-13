@@ -110,7 +110,7 @@ func (fw *FileWriter) buildStructures(result *LouvainResult, parser *GraphParser
 		// Get the id of the only community in the top level
 		if len(result.Levels) > 0 && len(result.Levels[len(result.Levels)-1].Communities) == 1 {
 			for commID := range result.Levels[len(result.Levels)-1].Communities {
-				fw.rootID = fmt.Sprintf("c0_l%d_%d", len(result.Levels)-1, commID)
+				fw.rootID = fmt.Sprintf("c0_l%d_%d", len(result.Levels), commID)
 				break
 			}
 		} else {

@@ -139,8 +139,8 @@ for _, neighborComm := range sortedCommunities {
 		// fmt.Printf("Phase %d: Improvement %t\n", phase, improvement)
 
 		// Phase 2: Community aggregation (create super-graph)
+		
 		sle.aggregateCommunities()
-
 		if !totalImprovement {
 			break
 		}

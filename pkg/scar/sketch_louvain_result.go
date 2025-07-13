@@ -299,38 +299,6 @@ func (slr *SketchLouvainResult) WriteFiles(config SCARConfig) error {
 	return nil
 }
 
-
-// getFinalPartitionToOriginalNodes reconstructs the final partition mapped to original nodes
-func (slr *SketchLouvainResult) getFinalPartitionToOriginalNodes() []int64 {
-	if len(slr.levels) == 0 {
-		return []int64{}
-	}
-	
-	if len(slr.levels) == 1 {
-		// No hierarchy - return the single level partition
-		return slr.levels[0].partition
-	}
-	
-	// Use the mapping we built to get original nodes for final communities
-	finalPartition := make([]int64, len(slr.levels[0].partition))
-	
-	// Get final level communities
-	finalLevel := len(slr.levels) - 1
-	finalCommunityAssignment := int64(0)
-	
-	for commID := range slr.levels[finalLevel].communityToNodes {
-		formattedID := fmt.Sprintf("c0_l%d_%d", finalLevel+1, commID)
-		if originalNodes, exists := slr.mapping[formattedID]; exists {
-			for _, originalNode := range originalNodes {
-				finalPartition[originalNode] = finalCommunityAssignment
-			}
-		}
-		finalCommunityAssignment++
-	}
-	
-	return finalPartition
-}
-
 // writeMappingFile writes the mapping from communities to original nodes
 func (slr *SketchLouvainResult) writeMappingFile(config SCARConfig) error {
 	filename := fmt.Sprintf("%s_mapping.dat", config.Prefix)
@@ -433,36 +401,77 @@ func (slr *SketchLouvainResult) writeSketchFile(config SCARConfig) error {
 		filepath.Base(config.PropertyFile), filepath.Base(config.PathFile))
 	
 	// Write sketches for all levels
-	for level, levelResult := range slr.levels {
-		fmt.Printf("Writing sketches for level %d\n", level)
-		
-		// Sort node IDs for consistent output
-		var nodeIDs []int64
-		for nodeId := range levelResult.sketches {
-			nodeIDs = append(nodeIDs, nodeId)
-		}
-		sort.Slice(nodeIDs, func(i, j int) bool { return nodeIDs[i] < nodeIDs[j] })
-		
-		for _, nodeId := range nodeIDs {
-			sketch := levelResult.sketches[nodeId]
-			if sketch != nil {
-				slr.writeNodeSketch(file, nodeId, level, sketch, config.NK)
-			}
-		}
-	}
-	
-	return nil
+    for level, levelResult := range slr.levels {
+        // Build reverse mapping: normalized ID -> original community ID
+        var reverseMapping map[int64]int64
+        if level > 0 {
+            reverseMapping = make(map[int64]int64)
+            prevLevelMapping := slr.levels[level-1].commToNewNode
+            for originalComm, normalizedId := range prevLevelMapping {
+                reverseMapping[normalizedId] = originalComm
+            }
+        }
+        
+        var nodeIDs []int64
+        for nodeId := range levelResult.sketches {
+            nodeIDs = append(nodeIDs, nodeId)
+        }
+        sort.Slice(nodeIDs, func(i, j int) bool { return nodeIDs[i] < nodeIDs[j] })
+        
+        for _, nodeId := range nodeIDs {
+            sketch := levelResult.sketches[nodeId]
+            if sketch != nil {
+                var formattedId string
+                if level == 0 {
+                    // Level 0: just node ID
+                    formattedId = fmt.Sprintf("%d", nodeId)
+                } else {
+                    // Level 1+: map back to original community ID
+                    originalId := reverseMapping[nodeId]
+                    formattedId = fmt.Sprintf("c0_l%d_%d", level, originalId)
+                }
+                slr.writeNodeSketch(file, formattedId, nodeId, level, sketch, config.NK)
+            }
+        }
+    }
+    
+    return nil
 }
+
 
 // writeNodeSketch writes a single node's sketch to file
 func (slr *SketchLouvainResult) writeNodeSketch(
 	file *os.File,
-	nodeId int64,
+	formattedId string,
+	nodeId int64,  // ← Keep original nodeId for hash lookup
 	level int,
 	sketch *VertexBottomKSketch,
 	nk int64,
 ) {
-	fmt.Fprintf(file, "%d level=%d\n", nodeId, level)
+	fmt.Fprintf(file, "%s\n", formattedId)  // ← Use formatted ID
+
+	// Find this node's own hashes from the hashToNodeMap 
+	levelResult := slr.levels[level]
+	var nodeOwnHashes []uint32
+	for hash, mappedNodeId := range levelResult.hashMap {
+		if mappedNodeId == nodeId {
+			nodeOwnHashes = append(nodeOwnHashes, hash)
+		}
+	}
+	
+	// Sort for consistent output
+	sort.Slice(nodeOwnHashes, func(i, j int) bool { return nodeOwnHashes[i] < nodeOwnHashes[j] })
+	
+	// Write node's own hashes
+	var hashStrs []string
+	for _, hash := range nodeOwnHashes {
+		hashStrs = append(hashStrs, fmt.Sprintf("%d", hash))
+	}
+	if len(hashStrs) > 0 {
+		fmt.Fprintf(file, "%s\n", strings.Join(hashStrs, ","))
+	} else {
+		fmt.Fprintf(file, "\n")
+	}
 	
 	// Write sketch layers
 	for layer := int64(0); layer < nk; layer++ {
@@ -478,7 +487,9 @@ func (slr *SketchLouvainResult) writeNodeSketch(
 		if len(sketchStrs) > 0 {
 			fmt.Fprintf(file, "%s\n", strings.Join(sketchStrs, ","))
 		} else {
-			fmt.Fprintf(file, "\n") // Empty line for empty sketch
+			fmt.Fprintf(file, "\n")
 		}
 	}
+	
+
 }

@@ -81,10 +81,35 @@ func RunLouvain(graph *NormalizedGraph, config LouvainConfig) (*LouvainResult, e
 		result.Statistics.TotalIterations += levelStats.Iterations
 		result.Statistics.TotalMoves += levelStats.Moves
 		
+		// if there is only 1 community, and that community only has 1 node, we can stop and not include this level
+		if len(levelInfo.Communities) == 1 {
+			// Get the single community (regardless of its ID)
+			var singleCommunityNodes []int
+			for _, nodes := range levelInfo.Communities {
+				singleCommunityNodes = nodes
+				break // There's only one, so we can break after the first iteration
+			}
+			
+			// If the single community has only 1 node, this level is degenerate
+			if len(singleCommunityNodes) == 1 {
+				fmt.Printf("Stopping at level %d with only 1 community of 1 node (degenerate case)\n", level)
+				// Remove this degenerate level from results
+				result.Levels = result.Levels[:len(result.Levels)-1]
+				break
+			}
+			
+			// If the single community has all nodes, no further improvement is possible
+			if len(singleCommunityNodes) == state.Graph.NumNodes {
+				fmt.Printf("Stopping at level %d: all nodes in single community, no further clustering possible\n", level)
+				break
+			}
+		}
+
 		if !improvement {
 			break
 		}
-		
+
+			
 		// Create super graph for next level
 		superGraph, communityMap, superNodeToCommMap, err := state.CreateSuperGraph()
 		if err != nil {
@@ -241,16 +266,14 @@ func (s *LouvainState) ExecuteOneLevel() (bool, error) {
 			}
 			
 			moves := s.processNodeChunk(nodeOrder[i:end])
+
+			if moves > 0 {
+				improvement = true
+			}
 			iterMoves += moves
 		}
 		
 		nbMoves += iterMoves
-		
-		if iterMoves == 0 {
-			break
-		}
-		
-		improvement = true
 		
 		if s.Config.ProgressCallback != nil {
 			s.Config.ProgressCallback(-1, s.Iteration, 

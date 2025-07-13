@@ -199,7 +199,7 @@ func RunMaterializationLouvain(graphFile, propertiesFile, pathFile string, confi
 		fmt.Println("Step 5: Writing output files...")
 	}
 	
-	if err := writeLouvainOutputs(louvainResult, graphParser, config); err != nil {
+	if err := writeLouvainOutputs(louvainResult, graphParser, materializationResult.HomogeneousGraph, config); err != nil {
 		return nil, fmt.Errorf("output generation failed: %w", err)
 	}
 	
@@ -1235,13 +1235,33 @@ func convertHomogeneousToNormalized(hgraph *materialization.HomogeneousGraph) (*
 }
 
 // writeLouvainOutputs generates Louvain output files
-func writeLouvainOutputs(result *louvain.LouvainResult, parser *louvain.GraphParser, config *PipelineConfig) error {
+func writeLouvainOutputs(result *louvain.LouvainResult, parser *louvain.GraphParser, materializedGraph *materialization.HomogeneousGraph, config *PipelineConfig) error {
 	// Create output directory
 	if err := os.MkdirAll(config.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 	
-	// Write Louvain results
+	// ✅ NEW: Write materialized graph files FIRST
+	if materializedGraph != nil {
+		if config.Verbose {
+			fmt.Println("  Writing materialized graph files...")
+		}
+		
+		// Write edge list (simple format for other tools)
+		edgeListPath := filepath.Join(config.OutputDir, config.OutputPrefix+"_materialized.edgelist")
+		if err := materialization.SaveAsSimpleEdgeList(materializedGraph, edgeListPath); err != nil {
+			return fmt.Errorf("failed to write materialized edgelist: %w", err)
+		}
+		
+		if config.Verbose {
+			fmt.Printf("    Edgelist: %s\n", edgeListPath)
+		}
+	}
+	
+	// Write Louvain results (existing functionality)
+	if config.Verbose {
+		fmt.Println("  Writing Louvain clustering results...")
+	}
 	writer := louvain.NewFileWriter()
 	if err := writer.WriteAll(result, parser, config.OutputDir, config.OutputPrefix); err != nil {
 		return fmt.Errorf("failed to write Louvain results: %w", err)
