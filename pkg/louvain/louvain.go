@@ -584,11 +584,11 @@ func (s *LouvainState) modularityGain(node int, targetComm int, k_i_in float64) 
 				
 				gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
 				
-				if true {
-					fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, nodeDegree: %.4f, "+
-					"toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
-					node, targetComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight, gain)
-				}
+				// if true {
+				// 	fmt.Printf("LOUVAIN: Moving node %d to community %d: edgesToTo: %.4f, nodeDegree: %.4f, "+
+				// 	"toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+				// 	node, targetComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight, gain)
+				// }
 				
 	
 

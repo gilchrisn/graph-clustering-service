@@ -140,10 +140,10 @@ for _, neighborComm := range sortedCommunities {
 
 		// Phase 2: Community aggregation (create super-graph)
 		
-		sle.aggregateCommunities()
 		if !totalImprovement {
 			break
 		}
+		sle.aggregateCommunities()
 
 		phase++
 	}
@@ -370,11 +370,11 @@ func (sle *SketchLouvainEngine) calculateModularityGain(
 
 	gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
 	// Print all components for debugging
-	if true {
-		fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, "+
-			" nodeDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
-			nodeId, toComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight, gain)		
-	}
+	// if true {
+	// 	fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, "+
+	// 		" nodeDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
+	// 		nodeId, toComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight, gain)		
+	// }
 
 
 	
