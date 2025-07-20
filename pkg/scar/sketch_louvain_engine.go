@@ -31,8 +31,23 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 		return err
 	}
 
+	// // print degree of each node
+	// fmt.Println("Node degrees:")
+	// for nodeId := int64(0); nodeId < sle.sketchLouvainState.n; nodeId++ {
+	// 	if sketch := sle.sketchLouvainState.GetVertexSketch(nodeId); sketch != nil {
+	// 		// Estimate degree using sketch cardinality	
+	// 		estimatedDegree := sketch.EstimateCardinality()
+	// 		fmt.Printf("Node sketch %d: %s\n", nodeId, sketch.String())
+	// 		fmt.Printf("Node %d: estimated degree %.4f\n", nodeId, estimatedDegree)
+	// 	} else {		
+	// 		fmt.Printf("Node %d: no sketch available\n", nodeId)
+	// 	}
+	// }
+
 	// Phase 2: Run Louvain algorithm
 	// startTime := time.Now()
+
+
 
 	// Run Louvain phases
 	totalImprovement := true
@@ -40,7 +55,7 @@ func (sle *SketchLouvainEngine) RunLouvain() error {
 
 	for totalImprovement && phase < 3 {
 		// fmt.Printf("=== Louvain Phase %d ===\n", phase)
-		// sle.sketchLouvainState.PrintState(fmt.Sprintf("Phase %d", phase), "ALL")
+		// sle.sketchLouvainState.PrintState(fmt.Sprintf("Phase %d", phase), "SKETCHES")
 
 		// Phase 1: Local optimization
 		totalImprovement = false
@@ -100,7 +115,17 @@ sort.Slice(sortedCommunities, func(i, j int) bool {
 
 // Calculate gain for moving to each neighboring community
 bestCommunity := currentCommunity
-bestGain := sle.calculateModularityGain(nodeId, currentCommunity, neighborCommunities[currentCommunity])
+// bestGain := sle.calculateModularityGain(nodeId, currentCommunity, neighborCommunities[currentCommunity]) 
+
+bestGain := 0.0
+// fallback 
+if (sle.sketchLouvainState.GetVertexSketch(nodeId).IsSketchFull()) {
+	bestGain = sle.calculateModularityGain(nodeId, currentCommunity, neighborCommunities[currentCommunity]) 
+} else {
+	bestGain = sle.calculateModularityGain(nodeId, currentCommunity, neighborCommunities[currentCommunity])
+}
+
+// fmt.Printf("Node %d: current community %d, best gain so far: %f\n", nodeId, currentCommunity, bestGain)
 for _, neighborComm := range sortedCommunities {
 	if neighborComm == currentCommunity {
 		continue
@@ -109,10 +134,11 @@ for _, neighborComm := range sortedCommunities {
 
     // Use the weight from FindNeighboringCommunities
     edgesToComm := neighborCommunities[neighborComm]
+	
     gain := sle.calculateModularityGain(nodeId, neighborComm, edgesToComm)
+	// fmt.Printf("Node %d: neighbor community %d, gain: %f\n", nodeId, neighborComm, gain)
 
     if gain > bestGain {
-
         bestGain = gain
         bestCommunity = neighborComm
     }
@@ -121,7 +147,7 @@ for _, neighborComm := range sortedCommunities {
 
 				// Move node if beneficial
 				if bestCommunity != currentCommunity {
-					fmt.Printf("Node %d: moving from community %d to %d (gain: %f)\n", nodeId, currentCommunity, bestCommunity, bestGain)
+					// fmt.Printf("Node %d: moving from community %d to %d (gain: %f)\n", nodeId, currentCommunity, bestCommunity, bestGain)
 					sle.sketchLouvainState.MoveNode(nodeId, currentCommunity, bestCommunity)
 					totalImprovement = true
 					improvement = true
@@ -129,6 +155,7 @@ for _, neighborComm := range sortedCommunities {
 				}
 			}
 
+			fmt.Printf("Local iteration %d: %d nodes processed, %d moved\n", localIter, nodesProcessed, nodesMoved)
 			localIter++
 			// fmt.Printf("Local iter %d: %d nodes processed, %d moved\n", localIter, nodesProcessed, nodesMoved)
 		}
@@ -140,10 +167,15 @@ for _, neighborComm := range sortedCommunities {
 
 		// Phase 2: Community aggregation (create super-graph)
 		
+		sle.aggregateCommunities()
 		if !totalImprovement {
+			if phase == 0 {
+				// if no improvement in first phase, put everything in one community
+				sle.aggregateCommunities()
+			}
 			break
 		}
-		sle.aggregateCommunities()
+		
 
 		phase++
 	}
@@ -164,12 +196,13 @@ func (sle *SketchLouvainEngine) InitializeGraphAndSketches() error {
 		return err
 	}
 	sle.graph = graph
+	propK := sle.config.K + 1
 
 	n := graph.n
 	pathLength := int64(10)
 
 	// Initialize flat sketch arrays (for compatibility with existing sketch computation)
-	oldSketches := make([]uint32, pathLength*n*sle.config.K*sle.config.NK)
+	oldSketches := make([]uint32, pathLength*n*propK*sle.config.NK)
 	for i := range oldSketches {
 		oldSketches[i] = math.MaxUint32
 	}
@@ -194,9 +227,9 @@ func (sle *SketchLouvainEngine) InitializeGraphAndSketches() error {
 
 	// Compute sketches using existing logic
 	sketchComputer := NewSketchComputer(graph.n)
-	sketchComputer.ComputeForGraph(graph, oldSketches, path, pathLength, vertexProperties, nodeHashValue, sle.config.K, sle.config.NK, sle.config.NumWorkers)
+	sketchComputer.ComputeForGraph(graph, oldSketches, path, pathLength, vertexProperties, nodeHashValue, propK, sle.config.NK, sle.config.NumWorkers)
 
-	sketches := oldSketches[(pathLength-1)*n*sle.config.K*sle.config.NK:]
+	sketches := oldSketches[(pathLength-1)*n*propK*sle.config.NK:]
 
 	// Add 1 to all sketches (original logic)
 	for i := range sketches {
@@ -206,7 +239,7 @@ func (sle *SketchLouvainEngine) InitializeGraphAndSketches() error {
 	}
 
 	// Convert flat arrays to VertexBottomKSketch objects
-	newSketchManager := sle.convertToVertexSketches(sketches, nodeHashValue, n)
+	newSketchManager := sle.convertPropSketchesToFinal(sketches, nodeHashValue, n, propK)
 
 	// Initialize community manager
 	sle.sketchLouvainState = NewSketchLouvainState(sle.graph.n, newSketchManager)
@@ -260,84 +293,178 @@ func (sle *SketchLouvainEngine) InitializeGraphAndSketches() error {
 	return nil
 }
 
-// convertToVertexSketches converts flat arrays to VertexBottomKSketch objects
-func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeHashValue []uint32, n int64) *SketchManager {
-	newSketchManager := NewSketchManager(sle.config.K, sle.config.NK)
 
-	for i := int64(0); i < n; i++ {
-		if nodeHashValue[i*sle.config.NK] != 0 {
-			// Create vertex sketch
-			sketch := NewVertexBottomKSketch(i, sle.config.K, sle.config.NK)
+// convertPropSketchesToFinal converts sketches generated during propagation
+// at size propK = K+1 into final bottom-k sketches of size sle.config.K.
+// During the conversion we drop the node's own seed hash(es) so they don't
+// consume sketch slots. Because propagation maintained sorted order, we can
+// take the first K non-self values per layer.
+func (sle *SketchLouvainEngine) convertPropSketchesToFinal(
+    propSketches []uint32,
+    nodeHashValue []uint32,
+    n int64,
+    propK int64,
+) *SketchManager {
+    finalK := sle.config.K
+    nk := sle.config.NK
 
-			// Prepare all sketch data at once
-			allSketchData := make([][]uint32, sle.config.NK)
-			for j := int64(0); j < sle.config.NK; j++ {
-				layerSketch := make([]uint32, sle.config.K)
-				for ki := int64(0); ki < sle.config.K; ki++ {
-					idx := j*n*sle.config.K + i*sle.config.K + ki
-					if int(idx) < len(sketches) {
-						layerSketch[ki] = sketches[idx]
-					} else {
-						layerSketch[ki] = math.MaxUint32
-					}
-				}
-				allSketchData[j] = layerSketch
-			}
+    mgr := NewSketchManager(finalK, nk)
 
-			// Set it all at once
-			sketch.SetCompleteSketch(allSketchData)
+    // Pre-build per-node self-hash set (small; nk is tiny, so map cost is low).
+    selfHashes := make([]map[uint32]struct{}, n)
+    for i := int64(0); i < n; i++ {
+        m := make(map[uint32]struct{}, nk)
+        for j := int64(0); j < nk; j++ {
+            hv := nodeHashValue[i*nk+j]
+            if hv != 0 {
+                m[hv] = struct{}{}
+            }
+        }
+        selfHashes[i] = m
+    }
 
-			// Build hash to node mapping
-			for j := int64(0); j < sle.config.NK; j++ {
-				hashValue := nodeHashValue[i*sle.config.NK+j]
-				if hashValue != 0 {
-					newSketchManager.hashToNodeMap[hashValue] = i
-				}
-			}
+    for i := int64(0); i < n; i++ {
+        // Skip nodes that were never seeded (no hash in layer 0).
+        if nodeHashValue[i*nk] == 0 {
+            continue
+        }
 
-			// Remove node's own hash values from its sketch
-			nodeOwnHashes := make(map[uint32]bool)
-			for j := int64(0); j < sle.config.NK; j++ {
-				ownHashValue := nodeHashValue[i*sle.config.NK+j]
-				if ownHashValue != 0 {
-					nodeOwnHashes[ownHashValue] = true
-				}
-			}
+        vsk := NewVertexBottomKSketch(i, finalK, nk)
 
-			// Clean each layer's sketch
-			for j := int64(0); j < sle.config.NK; j++ {
-				cleanedSketch := make([]uint32, sle.config.K)
-				cleanIdx := 0
+        for j := int64(0); j < nk; j++ {
+            // Collect candidates from propagated sketch (propK wide).
+            out := make([]uint32, 0, finalK)
+            base := j*n*propK + i*propK
 
-				for ki := int64(0); ki < sle.config.K; ki++ {
-					val := sketch.sketches[j][ki]
-					if val != math.MaxUint32 && !nodeOwnHashes[val] {
-						if cleanIdx < int(sle.config.K) {
-							cleanedSketch[cleanIdx] = val
-							cleanIdx++
-						}
-					}
-				}
+            for ki := int64(0); ki < propK; ki++ {
+                idx := base + ki
+                if int(idx) >= len(propSketches) {
+                    break
+                }
+                v := propSketches[idx]
+                if v == math.MaxUint32 {
+                    break // remaining are empty
+                }
+                // Drop self-hash.
+                if _, isSelf := selfHashes[i][v]; isSelf {
+                    continue
+                }
+                // Optional tiny dedup within layer (comment out if unwanted):
+                if len(out) > 0 && v == out[len(out)-1] {
+                    continue
+                }
+                out = append(out, v)
+                if len(out) == int(finalK) {
+                    break
+                }
+            }
 
-				// Fill remaining with MaxUint32
-				for cleanIdx < int(sle.config.K) {
-					cleanedSketch[cleanIdx] = math.MaxUint32
-					cleanIdx++
-				}
+            // Pad if under-filled.
+            for len(out) < int(finalK) {
+                out = append(out, math.MaxUint32)
+            }
 
-				sketch.sketches[j] = cleanedSketch
-			}
+            // Install into the sketch.
+            copy(vsk.sketches[j], out)
+        }
 
-			sketch.UpdateFilledCount()
+        vsk.UpdateFilledCount()
 
-			// fmt.Println("Created sketch for node", i, ":", sketch.String())
-			if sketch.GetFilledCount() > 0 {
-				newSketchManager.vertexSketches[i] = sketch
-			}
-		}
-	}
-	return newSketchManager
+        if vsk.GetFilledCount() > 0 {
+            mgr.vertexSketches[i] = vsk
+        }
+
+        // Rebuild hash→node map from node seeds (what others will see).
+        for j := int64(0); j < nk; j++ {
+            hv := nodeHashValue[i*nk+j]
+            if hv != 0 {
+                mgr.hashToNodeMap[hv] = i
+            }
+        }
+    }
+
+    return mgr
 }
+
+
+// // convertToVertexSketches converts flat arrays to VertexBottomKSketch objects
+// func (sle *SketchLouvainEngine) convertToVertexSketches(sketches []uint32, nodeHashValue []uint32, n int64) *SketchManager {
+// 	newSketchManager := NewSketchManager(sle.config.K, sle.config.NK)
+
+// 	for i := int64(0); i < n; i++ {
+// 		if nodeHashValue[i*sle.config.NK] != 0 {
+// 			// Create vertex sketch
+// 			sketch := NewVertexBottomKSketch(i, sle.config.K, sle.config.NK)
+
+// 			// Prepare all sketch data at once
+// 			allSketchData := make([][]uint32, sle.config.NK)
+// 			for j := int64(0); j < sle.config.NK; j++ {
+// 				layerSketch := make([]uint32, sle.config.K)
+// 				for ki := int64(0); ki < sle.config.K; ki++ {
+// 					idx := j*n*sle.config.K + i*sle.config.K + ki
+// 					if int(idx) < len(sketches) {
+// 						layerSketch[ki] = sketches[idx]
+// 					} else {
+// 						layerSketch[ki] = math.MaxUint32
+// 					}
+// 				}
+// 				allSketchData[j] = layerSketch
+// 			}
+
+// 			// Set it all at once
+// 			sketch.SetCompleteSketch(allSketchData)
+
+// 			// Build hash to node mapping
+// 			for j := int64(0); j < sle.config.NK; j++ {
+// 				hashValue := nodeHashValue[i*sle.config.NK+j]
+// 				if hashValue != 0 {
+// 					newSketchManager.hashToNodeMap[hashValue] = i
+// 				}
+// 			}
+
+// 			// Remove node's own hash values from its sketch
+// 			nodeOwnHashes := make(map[uint32]bool)
+// 			for j := int64(0); j < sle.config.NK; j++ {
+// 				ownHashValue := nodeHashValue[i*sle.config.NK+j]
+// 				if ownHashValue != 0 {
+// 					nodeOwnHashes[ownHashValue] = true
+// 				}
+// 			}
+
+// 			// Clean each layer's sketch
+// 			for j := int64(0); j < sle.config.NK; j++ {
+// 				cleanedSketch := make([]uint32, sle.config.K)
+// 				cleanIdx := 0
+
+// 				for ki := int64(0); ki < sle.config.K; ki++ {
+// 					val := sketch.sketches[j][ki]
+// 					if val != math.MaxUint32 && !nodeOwnHashes[val] {
+// 						if cleanIdx < int(sle.config.K) {
+// 							cleanedSketch[cleanIdx] = val
+// 							cleanIdx++
+// 						}
+// 					}
+// 				}
+
+// 				// Fill remaining with MaxUint32
+// 				for cleanIdx < int(sle.config.K) {
+// 					cleanedSketch[cleanIdx] = math.MaxUint32
+// 					cleanIdx++
+// 				}
+
+// 				sketch.sketches[j] = cleanedSketch
+// 			}
+
+// 			sketch.UpdateFilledCount()
+
+// 			// fmt.Println("Created sketch for node", i, ":", sketch.String())
+// 			if sketch.GetFilledCount() > 0 {
+// 				newSketchManager.vertexSketches[i] = sketch
+// 			}
+// 		}
+// 	}
+// 	return newSketchManager
+// }
 
 
 // calculateModularityGain calculates modularity gain for moving a node
@@ -370,7 +497,7 @@ func (sle *SketchLouvainEngine) calculateModularityGain(
 
 	gain := edgesToTo - nodeDegree * toCommDegree / (2 * wholeWeight)
 	// Print all components for debugging
-	// if true {
+	// if nodeId < 10 {
 	// 	fmt.Printf("Moving node %d to community %d: edgesToTo: %.4f, "+
 	// 		" nodeDegree: %.4f, toCommDegree: %.4f, wholeWeight: %.4f, gain: %.4f\n",
 	// 		nodeId, toComm, edgesToTo, nodeDegree, toCommDegree, wholeWeight, gain)		

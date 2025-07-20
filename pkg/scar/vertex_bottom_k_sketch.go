@@ -172,13 +172,21 @@ func (vbs *VertexBottomKSketch) EstimateCardinality() float64 {
 		return float64(vbs.filledCount)
 	} else {
 		// Full sketch, use estimation formula
-		rK := float64(vbs.sketches[0][vbs.k-1])
-		if rK > 0 {
-			estimate := float64(vbs.k-1) * float64(math.MaxUint32) / rK
-			return estimate
+		sum := uint32(0)
+		// Calculate average of the k-th smallest values across all layers
+		for layer := int64(0); layer < vbs.nk; layer++ {
+			if vbs.sketches[layer][vbs.k-1] != math.MaxUint32 {
+				sum += vbs.sketches[layer][vbs.k-1] 
+			}
 		}
+
+		if vbs.nk == 0 {
+			return 0.0 // No layers, cannot estimate
+		}
+
+
+		return float64(vbs.k - 1) * float64(math.MaxUint32) / (float64(sum) * float64(vbs.nk))
 	}
-	return 0.0
 }
 
 // AddOne adds 1 to all non-max values in all sketches

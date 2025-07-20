@@ -70,6 +70,7 @@ func main() {
 	}
 
 	fmt.Println("✅ Pipeline completed!")
+
 }
 
 // ===== MATERIALIZATION + LOUVAIN PIPELINE =====
@@ -185,8 +186,8 @@ func NewPipelineConfig() *PipelineConfig {
 		
 		// Default SCAR config
 		SCARConfig: scar.SCARConfig{
-			K:           1024,
-			NK:          4,
+			K:           3,
+			NK:          1,
 			Threshold:   0.5,
 			UseLouvain:  true,
 			SketchOutput: true, // For hierarchy output compatible with PPRViz
@@ -245,12 +246,12 @@ func runScar(graphFile, propertiesFile, pathFile, outputDir string) error {
 	config.OutputPrefix = "communities"
 	config.Verbose = true
 	
-	// Configure SCAR with same settings as your original
-	config.SCARConfig.K = 1024
-	config.SCARConfig.NK = 4
-	config.SCARConfig.Threshold = 0.5
-	config.SCARConfig.UseLouvain = true
-	config.SCARConfig.SketchOutput = true
+	// // Configure SCAR with same settings as your original
+	// config.SCARConfig.K = 25
+	// config.SCARConfig.NK = 1
+	// config.SCARConfig.Threshold = 0.5
+	// config.SCARConfig.UseLouvain = true
+	// config.SCARConfig.SketchOutput = true
 
 	fmt.Println("   🔄 Running SCAR...")
 	fmt.Printf("   SCAR config: k=%d, nk=%d, threshold=%.3f, sketch_output=%t\n", 

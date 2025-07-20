@@ -329,7 +329,7 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 			gain := s.modularityGain(node, nc.Community, nc.Weight)
 
 			if gain > bestGain {
-				fmt.Printf("Node %d: found better community %d (gain: %.4f)\n", node, nc.Community, gain)
+				// fmt.Printf("Node %d: found better community %d (gain: %.4f)\n", node, nc.Community, gain)
 				bestComm = nc.Community
 				bestGain = gain
 			}
@@ -337,8 +337,8 @@ func (s *LouvainState) processNodeChunk(nodes []int) int {
 
 		// if bestComm != oldComm && bestGain > s.Config.MinModularity {
 		if bestComm != oldComm {
-			fmt.Printf("Node %d: moving from community %d to %d (gain: %.4f)\n",
-				node, oldComm, bestComm, bestGain)
+			// fmt.Printf("Node %d: moving from community %d to %d (gain: %.4f)\n",
+			// 	node, oldComm, bestComm, bestGain)
 
 			if err := s.moveNode(node, oldComm, bestComm); err != nil {
 				fmt.Printf("Error moving node %d: %v\n", node, err)

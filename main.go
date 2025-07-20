@@ -16,6 +16,8 @@ import (
 	"github.com/gilchrisn/graph-clustering-service/pkg/materialization"
 	"github.com/gilchrisn/graph-clustering-service/pkg/louvain"
 	"github.com/gilchrisn/graph-clustering-service/pkg/scar"
+	
+	"gonum.org/v1/gonum/stat"
 )
 
 // PipelineType defines which pipeline to run
@@ -225,227 +227,135 @@ func RunMaterializationLouvain(graphFile, propertiesFile, pathFile string, confi
 
 // RunComparison executes both pipelines and compares their results using NMI
 func RunComparison(graphFile, propertiesFile, pathFile string, config *PipelineConfig) (*ComparisonResult, error) {
-	startTime := time.Now()
-	
-	if config.Verbose {
-		fmt.Println("=== Running Pipeline Comparison ===")
-		fmt.Println("Will run both Materialization+Louvain and SCAR pipelines and compare results")
-	}
-	
-	// Create separate output directories for each pipeline
-	matOutputDir := filepath.Join(config.OutputDir, "materialization_louvain")
-	scarOutputDir := filepath.Join(config.OutputDir, "scar")
-	
-	// Step 1: Run Materialization + Louvain pipeline
-	if config.Verbose {
-		fmt.Println("\nStep 1: Running Materialization + Louvain pipeline...")
-	}
-	
-	matConfig := *config // Copy config
-	matConfig.OutputDir = matOutputDir
-	matConfig.OutputPrefix = "mat_communities"
-	
-	matStart := time.Now()
-	matResult, err := RunMaterializationLouvain(graphFile, propertiesFile, pathFile, &matConfig)
-	if err != nil {
-		return nil, fmt.Errorf("materialization+Louvain pipeline failed: %w", err)
-	}
-	matTime := time.Since(matStart)
-	
-	// Step 2: Run SCAR pipeline  
-	if config.Verbose {
-		fmt.Println("\nStep 2: Running SCAR sketch-based Louvain pipeline...")
-	}
-	
-	scarConfig := *config // Copy config
-	scarConfig.OutputDir = scarOutputDir
-	scarConfig.OutputPrefix = "scar_communities"
-	scarConfig.SCARConfig.WriteSketchGraph = true // Ensure sketch graph files are written
-	scarConfig.SCARConfig.SketchGraphWeights = false // Use unweighted sketch graph files
-	
-	scarStart := time.Now()
-	scarResult, err := RunSketchLouvain(graphFile, propertiesFile, pathFile, &scarConfig)
-	if err != nil {
-		return nil, fmt.Errorf("SCAR pipeline failed: %w", err)
-	}
-	scarTime := time.Since(scarStart)
-	
-	// Step 3: Parse community assignments from both pipelines
-	if config.Verbose {
-		fmt.Println("\nStep 3: Parsing hierarchical community assignments...")
-	}
-	
-	matPartition, err := parseLouvainOutput(matOutputDir, "mat_communities")
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse materialization+Louvain output: %w", err)
-	}
-	
-	scarPartition, err := parseSCAROutput(scarOutputDir, "scar_communities")
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse SCAR output: %w", err)
-	}
-	
-	if config.Verbose {
-		fmt.Printf("  Materialization+Louvain: %d levels (max level %d)\n", len(matPartition.Levels), matPartition.MaxLevel)
-		fmt.Printf("  SCAR: %d levels (max level %d)\n", len(scarPartition.Levels), scarPartition.MaxLevel)
-		
-		// Debug: Show level details
-		fmt.Println("  Materialization+Louvain level details:")
-		for level := 0; level <= matPartition.MaxLevel; level++ {
-			if levelData, exists := matPartition.Levels[level]; exists {
-				totalNodes := 0
-				for _, nodes := range levelData {
-					totalNodes += len(nodes)
-				}
-				fmt.Printf("    Level %d: %d communities, %d nodes\n", level, len(levelData), totalNodes)
-			} else {
-				fmt.Printf("    Level %d: NOT FOUND\n", level)
-			}
-		}
-		
-		fmt.Println("  SCAR level details:")
-		for level := 0; level <= scarPartition.MaxLevel; level++ {
-			if levelData, exists := scarPartition.Levels[level]; exists {
-				totalNodes := 0
-				for _, nodes := range levelData {
-					totalNodes += len(nodes)
-				}
-				fmt.Printf("    Level %d: %d communities, %d nodes\n", level, len(levelData), totalNodes)
-			} else {
-				fmt.Printf("    Level %d: NOT FOUND\n", level)
-			}
-		}
-		
-		// Count total nodes from level 0
-		totalNodes := 0
-		if level0, exists := matPartition.Levels[0]; exists {
-			for _, nodes := range level0 {
-				totalNodes += len(nodes)
-			}
-		}
-		fmt.Printf("  Total nodes in analysis: %d\n", totalNodes)
-	}
-	
-	// Step 4: Calculate hierarchical NMI scores
-	if config.Verbose {
-		fmt.Println("\nStep 4: Calculating hierarchical NMI scores...")
-	}
-	
-	nmiScores, err := calculateHierarchicalNMI(matPartition, scarPartition)
-	if err != nil {
-		return nil, fmt.Errorf("hierarchical NMI calculation failed: %w", err)
-	}
-	
-	// Find common levels
-	commonLevels := make([]int, 0, len(nmiScores))
-	for level := range nmiScores {
-		commonLevels = append(commonLevels, level)
-	}
-	
-	if config.Verbose {
-		fmt.Printf("  Calculated NMI for %d common levels\n", len(commonLevels))
-		for _, level := range commonLevels {
-			if nmi, exists := nmiScores[level]; exists {
-				// Get community counts for this level
-				matComms := 0
-				scarComms := 0
-				matNodes := 0
-				scarNodes := 0
-				
-				if matLevel, exists := matPartition.Levels[level]; exists {
-					matComms = len(matLevel)
-					for _, nodes := range matLevel {
-						matNodes += len(nodes)
-					}
-				}
-				if scarLevel, exists := scarPartition.Levels[level]; exists {
-					scarComms = len(scarLevel)
-					for _, nodes := range scarLevel {
-						scarNodes += len(nodes)
-					}
-				}
-				
-				fmt.Printf("    Level %d: NMI = %.6f (Mat: %d comms/%d nodes, SCAR: %d comms/%d nodes)\n", 
-					level, nmi, matComms, matNodes, scarComms, scarNodes)
-					
-				// Debug: Show detailed info for problematic levels
-				if nmi == 0.0 {
-					fmt.Printf("      WARNING: NMI = 0 at level %d - investigating...\n", level)
-					flat1 := convertPartitionToFlat(matPartition, level)
-					flat2 := convertPartitionToFlat(scarPartition, level)
-					fmt.Printf("      Flat partition sizes: Mat=%d nodes, SCAR=%d nodes\n", len(flat1), len(flat2))
-					
-					// Count common nodes
-					commonNodes := 0
-					for nodeID := range flat1 {
-						if _, exists := flat2[nodeID]; exists {
-							commonNodes++
-						}
-					}
-					fmt.Printf("      Common nodes between partitions: %d\n", commonNodes)
-				}
-			}
-		}
-	}
-	
-	// Step 5: Generate comparison report
-	if config.Verbose {
-		fmt.Println("\nStep 5: Generating hierarchical comparison report...")
-	}
-	
-	totalTime := time.Since(startTime)
-	
-	// Count total nodes from finest level (level 0)
-	totalNodes := 0
-	if level0, exists := matPartition.Levels[0]; exists {
-		for _, nodes := range level0 {
-			totalNodes += len(nodes)
-		}
-	}
-	
-	result := &ComparisonResult{
-		MaterializationResult:    matResult,
-		SCARResult:              scarResult,
-		NMIScores:               nmiScores,
-		MaterializationPartition: matPartition,
-		SCARPartition:           scarPartition,
-		NumNodes:                totalNodes,
-		MaterializationTime:     matTime.Milliseconds(),
-		SCARTime:               scarTime.Milliseconds(),
-		TotalComparisonTime:    totalTime.Milliseconds(),
-		CommonLevels:           commonLevels,
-	}
-	
-	if err := writeHierarchicalComparisonReport(result, config); err != nil {
-		return nil, fmt.Errorf("failed to write comparison report: %w", err)
-	}
-	
-	if config.Verbose {
-		fmt.Println("\n=== Hierarchical Pipeline Comparison Complete ===")
-		fmt.Printf("Total comparison time: %v\n", totalTime)
-		fmt.Printf("Materialization+Louvain time: %v\n", matTime)
-		fmt.Printf("SCAR time: %v\n", scarTime)
-		if len(nmiScores) > 0 {
-			// Report average NMI and best level
-			totalNMI := 0.0
-			bestNMI := 0.0
-			bestLevel := -1
-			for level, nmi := range nmiScores {
-				totalNMI += nmi
-				if nmi > bestNMI {
-					bestNMI = nmi
-					bestLevel = level
-				}
-			}
-			avgNMI := totalNMI / float64(len(nmiScores))
-			fmt.Printf("Average NMI across levels: %.6f\n", avgNMI)
-			fmt.Printf("Best NMI: %.6f (level %d)\n", bestNMI, bestLevel)
-		}
-		fmt.Printf("Speedup: %.2fx\n", float64(matTime.Milliseconds())/float64(scarTime.Milliseconds()))
-	}
-	
-	return result, nil
+    startTime := time.Now()
+    if config.Verbose {
+        fmt.Println("=== Running Pipeline Comparison ===")
+        fmt.Println("Will run both Materialization+Louvain and SCAR pipelines and compare results")
+    }
+
+    // Prepare output dirs
+    matOutputDir := filepath.Join(config.OutputDir, "materialization_louvain")
+    scarOutputDir := filepath.Join(config.OutputDir, "scar")
+
+    // Step 1: Materialization + Louvain
+    if config.Verbose {
+        fmt.Println("\nStep 1: Running Materialization + Louvain pipeline...")
+    }
+    matConfig := *config
+    matConfig.OutputDir = matOutputDir
+    matConfig.OutputPrefix = "mat_communities"
+    matStart := time.Now()
+    matResult, err := RunMaterializationLouvain(graphFile, propertiesFile, pathFile, &matConfig)
+    if err != nil {
+        return nil, fmt.Errorf("materialization+Louvain pipeline failed: %w", err)
+    }
+    matTime := time.Since(matStart)
+
+    // Step 2: SCAR
+    if config.Verbose {
+        fmt.Println("\nStep 2: Running SCAR sketch-based Louvain pipeline...")
+    }
+    scarConfig := *config
+    scarConfig.OutputDir = scarOutputDir
+    scarConfig.OutputPrefix = "scar_communities"
+    scarConfig.SCARConfig.WriteSketchGraph = true
+    scarConfig.SCARConfig.SketchGraphWeights = false
+    scarStart := time.Now()
+    scarResult, err := RunSketchLouvain(graphFile, propertiesFile, pathFile, &scarConfig)
+    if err != nil {
+        return nil, fmt.Errorf("SCAR pipeline failed: %w", err)
+    }
+    scarTime := time.Since(scarStart)
+
+    // Step 3: Parse partitions
+    if config.Verbose {
+        fmt.Println("\nStep 3: Parsing hierarchical community assignments...")
+    }
+    matPartition, err := parseLouvainOutput(matOutputDir, "mat_communities")
+    if err != nil {
+        return nil, fmt.Errorf("failed to parse materialization+Louvain output: %w", err)
+    }
+    scarPartition, err := parseSCAROutput(scarOutputDir, "scar_communities")
+    if err != nil {
+        return nil, fmt.Errorf("failed to parse SCAR output: %w", err)
+    }
+
+    // Step 4: Calculate per-level NMI
+    if config.Verbose {
+        fmt.Println("\nStep 4: Calculating hierarchical NMI scores...")
+    }
+    nmiScores, err := calculateHierarchicalNMI(matPartition, scarPartition)
+    if err != nil {
+        return nil, fmt.Errorf("hierarchical NMI calculation failed: %w", err)
+    }
+    commonLevels := make([]int, 0, len(nmiScores))
+    for lvl := range nmiScores {
+        commonLevels = append(commonLevels, lvl)
+    }
+    if config.Verbose {
+        fmt.Printf("  Calculated NMI for %d common levels\n", len(commonLevels))
+        for _, lvl := range commonLevels {
+            fmt.Printf("    Level %d: NMI = %.6f\n", lvl, nmiScores[lvl])
+        }
+    }
+
+    // --- New Metrics ---
+    // 4a. Hierarchical Mutual Information (average NMI)
+    hmi := hierarchicalMutualInformation(nmiScores)
+    if config.Verbose {
+        fmt.Printf("Hierarchical Mutual Information (avg NMI): %.6f\n", hmi)
+    }
+
+    // 4b. Cophenetic Correlation
+    cc, err := CopheneticCorrelation(matPartition, scarPartition)
+    if err != nil {
+        fmt.Printf("Warning: could not compute cophenetic correlation: %v\n", err)
+    } else if config.Verbose {
+        fmt.Printf("Cophenetic Correlation: %.6f\n", cc)
+    }
+
+    // Step 5: Report and write
+    if config.Verbose {
+        fmt.Println("\nStep 5: Generating hierarchical comparison report...")
+    }
+    totalTime := time.Since(startTime)
+
+    totalNodes := 0
+    if lvl0, ok := matPartition.Levels[0]; ok {
+        for _, nodes := range lvl0 {
+            totalNodes += len(nodes)
+        }
+    }
+
+    result := &ComparisonResult{
+        MaterializationResult:    matResult,
+        SCARResult:               scarResult,
+        NMIScores:                nmiScores,
+        MaterializationPartition: matPartition,
+        SCARPartition:            scarPartition,
+        NumNodes:                 totalNodes,
+        MaterializationTime:      matTime.Milliseconds(),
+        SCARTime:                 scarTime.Milliseconds(),
+        TotalComparisonTime:      totalTime.Milliseconds(),
+        CommonLevels:             commonLevels,
+    }
+
+    if err := writeHierarchicalComparisonReport(result, config); err != nil {
+        return nil, fmt.Errorf("failed to write comparison report: %w", err)
+    }
+
+    if config.Verbose {
+        fmt.Println("\n=== Hierarchical Pipeline Comparison Complete ===")
+        fmt.Printf("Total comparison time: %v\n", totalTime)
+        fmt.Printf("Materialization+Louvain time: %v\n", matTime)
+        fmt.Printf("SCAR time: %v\n", scarTime)
+        avgNMI := hierarchicalMutualInformation(nmiScores)
+        fmt.Printf("Average NMI: %.6f, HMI: %.6f, CopheneticCorr: %.6f\n", avgNMI, hmi, cc)
+    }
+
+    return result, nil
 }
+
 
 // HierarchicalPartition represents partitions at multiple levels
 type HierarchicalPartition struct {
@@ -990,7 +900,7 @@ func RunSketchLouvain(graphFile, propertiesFile, pathFile string, config *Pipeli
 	scarConfig.PropertyFile = propertiesFile
 	scarConfig.PathFile = pathFile
 	scarConfig.Prefix = filepath.Join(config.OutputDir, config.OutputPrefix)
-	scarConfig.NumWorkers = 1
+	scarConfig.NumWorkers = 4
 	if config.Verbose {
 		fmt.Printf("  Graph file: %s\n", graphFile)
 		fmt.Printf("  Properties file: %s\n", propertiesFile)
@@ -1497,66 +1407,66 @@ func main() {
 	}
 	
 	// Print final summary
-	fmt.Println("\n=== Final Results ===")
+	// fmt.Println("\n=== Final Results ===")
 	
 	if compResult != nil {
-		// Comparison results
-		fmt.Printf("Hierarchical pipeline comparison completed successfully!\n")
-		fmt.Printf("Total comparison time: %d ms\n", compResult.TotalComparisonTime)
-		fmt.Printf("Materialization+Louvain time: %d ms\n", compResult.MaterializationTime)
-		fmt.Printf("SCAR time: %d ms\n", compResult.SCARTime)
+		// // Comparison results
+		// fmt.Printf("Hierarchical pipeline comparison completed successfully!\n")
+		// fmt.Printf("Total comparison time: %d ms\n", compResult.TotalComparisonTime)
+		// fmt.Printf("Materialization+Louvain time: %d ms\n", compResult.MaterializationTime)
+		// fmt.Printf("SCAR time: %d ms\n", compResult.SCARTime)
 		
-		if compResult.SCARTime > 0 {
-			speedup := float64(compResult.MaterializationTime) / float64(compResult.SCARTime)
-			fmt.Printf("SCAR Speedup: %.2fx\n", speedup)
-		}
+		// if compResult.SCARTime > 0 {
+		// 	speedup := float64(compResult.MaterializationTime) / float64(compResult.SCARTime)
+		// 	fmt.Printf("SCAR Speedup: %.2fx\n", speedup)
+		// }
 		
-		fmt.Printf("Common levels analyzed: %d\n", len(compResult.CommonLevels))
+		// fmt.Printf("Common levels analyzed: %d\n", len(compResult.CommonLevels))
 		
-		if len(compResult.NMIScores) > 0 {
-			// Calculate and display NMI statistics
-			totalNMI := 0.0
-			bestNMI := 0.0
-			bestLevel := -1
-			for level, nmi := range compResult.NMIScores {
-				totalNMI += nmi
-				if nmi > bestNMI {
-					bestNMI = nmi
-					bestLevel = level
-				}
-			}
-			avgNMI := totalNMI / float64(len(compResult.NMIScores))
+		// if len(compResult.NMIScores) > 0 {
+		// 	// Calculate and display NMI statistics
+		// 	totalNMI := 0.0
+		// 	bestNMI := 0.0
+		// 	bestLevel := -1
+		// 	for level, nmi := range compResult.NMIScores {
+		// 		totalNMI += nmi
+		// 		if nmi > bestNMI {
+		// 			bestNMI = nmi
+		// 			bestLevel = level
+		// 		}
+		// 	}
+		// 	avgNMI := totalNMI / float64(len(compResult.NMIScores))
 			
-			fmt.Printf("Average NMI Score: %.6f\n", avgNMI)
-			fmt.Printf("Best NMI Score: %.6f (level %d)\n", bestNMI, bestLevel)
+		// 	fmt.Printf("Average NMI Score: %.6f\n", avgNMI)
+		// 	fmt.Printf("Best NMI Score: %.6f (level %d)\n", bestNMI, bestLevel)
 			
-			// Display level-by-level NMI
-			fmt.Printf("Level-by-level NMI:\n")
-			for level := 0; level <= max(compResult.MaterializationPartition.MaxLevel, compResult.SCARPartition.MaxLevel); level++ {
-				if nmi, exists := compResult.NMIScores[level]; exists {
-					fmt.Printf("  Level %d: %.6f\n", level, nmi)
-				}
-			}
+		// 	// Display level-by-level NMI
+		// 	fmt.Printf("Level-by-level NMI:\n")
+		// 	for level := 0; level <= max(compResult.MaterializationPartition.MaxLevel, compResult.SCARPartition.MaxLevel); level++ {
+		// 		if nmi, exists := compResult.NMIScores[level]; exists {
+		// 			fmt.Printf("  Level %d: %.6f\n", level, nmi)
+		// 		}
+		// 	}
 			
-			// Overall interpretation
-			if avgNMI >= 0.8 {
-				fmt.Printf("Result: HIGH AGREEMENT between methods\n")
-			} else if avgNMI >= 0.6 {
-				fmt.Printf("Result: MODERATE AGREEMENT between methods\n")
-			} else if avgNMI >= 0.4 {
-				fmt.Printf("Result: LOW AGREEMENT between methods\n")
-			} else {
-				fmt.Printf("Result: POOR AGREEMENT between methods\n")
-			}
-		} else {
-			fmt.Printf("No common levels found for comparison\n")
-		}
+		// 	// Overall interpretation
+		// 	if avgNMI >= 0.8 {
+		// 		fmt.Printf("Result: HIGH AGREEMENT between methods\n")
+		// 	} else if avgNMI >= 0.6 {
+		// 		fmt.Printf("Result: MODERATE AGREEMENT between methods\n")
+		// 	} else if avgNMI >= 0.4 {
+		// 		fmt.Printf("Result: LOW AGREEMENT between methods\n")
+		// 	} else {
+		// 		fmt.Printf("Result: POOR AGREEMENT between methods\n")
+		// 	}
+		// } else {
+		// 	fmt.Printf("No common levels found for comparison\n")
+		// }
 		
-		if compResult.MaterializationResult.LouvainResult != nil {
-			fmt.Printf("Materialization+Louvain modularity: %.6f\n", compResult.MaterializationResult.LouvainResult.Modularity)
-		}
+		// if compResult.MaterializationResult.LouvainResult != nil {
+		// 	fmt.Printf("Materialization+Louvain modularity: %.6f\n", compResult.MaterializationResult.LouvainResult.Modularity)
+		// }
 		
-		fmt.Printf("Detailed hierarchical comparison report: %s/hierarchical_comparison_report.txt\n", config.OutputDir)
+		// fmt.Printf("Detailed hierarchical comparison report: %s/hierarchical_comparison_report.txt\n", config.OutputDir)
 		
 	} else {
 		// Single pipeline results
@@ -1578,6 +1488,63 @@ func main() {
 		fmt.Printf("Output files written to: %s/\n", config.OutputDir)
 	}
 }
+
+// hierarchicalMutualInformation averages the NMI scores across all common levels.
+func hierarchicalMutualInformation(nmiScores map[int]float64) float64 {
+    if len(nmiScores) == 0 {
+        return 0
+    }
+    sum := 0.0
+    for _, v := range nmiScores {
+        sum += v
+    }
+    return sum / float64(len(nmiScores))
+}
+
+// CopheneticCorrelation builds, for each pair of nodes, the level at which
+// they first coalesce in each hierarchy, then returns the Pearson correlation
+// between those two “height” arrays.
+func CopheneticCorrelation(p1, p2 *HierarchicalPartition) (float64, error) {
+    // 1) Build a map from “i,j”→level for each partition
+    build := func(p *HierarchicalPartition) map[string]float64 {
+        m := make(map[string]float64)
+        for lvl, comms := range p.Levels {
+            for _, nodes := range comms {
+                for i := 0; i < len(nodes); i++ {
+                    for j := i + 1; j < len(nodes); j++ {
+                        // canonical key
+                        a, b := nodes[i], nodes[j]
+                        key := a + "," + b
+                        if _, seen := m[key]; !seen {
+                            m[key] = float64(lvl)
+                        }
+                    }
+                }
+            }
+        }
+        return m
+    }
+
+    h1 := build(p1)
+    h2 := build(p2)
+
+    // 2) Collect matched heights
+    x, y := make([]float64, 0, len(h1)), make([]float64, 0, len(h1))
+    for key, v1 := range h1 {
+        if v2, ok := h2[key]; ok {
+            x = append(x, v1)
+            y = append(y, v2)
+        }
+    }
+    if len(x) == 0 {
+        return 0, fmt.Errorf("no common node‐pairs found")
+    }
+
+    // 3) Compute Pearson correlation
+    corr := stat.Correlation(x, y, nil)
+    return corr, nil
+}
+
 
 // Add this function near the top of your main file
 func allNodesAreIntegers(nodes []string) bool {

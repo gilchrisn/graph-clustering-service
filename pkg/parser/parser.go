@@ -501,10 +501,10 @@ func buildLeafGraph(leafSketches map[string]*SketchData, hashToNode map[uint32]s
 	var edges []Edge
 	processed := make(map[string]bool)
 	
-	fmt.Printf("DEBUG: Building leaf graph with %d nodes\n", len(leafSketches))
+	// fmt.Printf("DEBUG: Building leaf graph with %d nodes\n", len(leafSketches))
 	
 	for nodeID, sketchData := range leafSketches {
-		fmt.Printf("DEBUG: Node %s has %d sketch layers\n", nodeID, len(sketchData.Sketches))
+		// fmt.Printf("DEBUG: Node %s has %d sketch layers\n", nodeID, len(sketchData.Sketches))
 		nodeEdges := 0
 		
 		for layerIdx, layer := range sketchData.Sketches {
@@ -521,23 +521,23 @@ func buildLeafGraph(leafSketches map[string]*SketchData, hashToNode map[uint32]s
 					}
 					
 					if !processed[edgeKey] {
-						fmt.Printf("DEBUG: Creating edge %s <-> %s (hash %d)\n", nodeID, neighborID, hash)
+						// fmt.Printf("DEBUG: Creating edge %s <-> %s (hash %d)\n", nodeID, neighborID, hash)
 						edges = append(edges, Edge{From: nodeID, To: neighborID, Weight: 1.0})
 						edges = append(edges, Edge{From: neighborID, To: nodeID, Weight: 1.0})
 						processed[edgeKey] = true
 						nodeEdges++
 					}
 				} else if exists {
-					fmt.Printf("DEBUG: Skipping self-loop: node %s hash %d maps to same node\n", nodeID, hash)
+					// fmt.Printf("DEBUG: Skipping self-loop: node %s hash %d maps to same node\n", nodeID, hash)
 				} else {
-					fmt.Printf("DEBUG: Hash %d not found in hashToNode mapping\n", hash)
+					// fmt.Printf("DEBUG: Hash %d not found in hashToNode mapping\n", hash)
 				}
 			}
 		}
-		fmt.Printf("DEBUG: Node %s generated %d unique edges\n", nodeID, nodeEdges)
+		// fmt.Printf("DEBUG: Node %s generated %d unique edges\n", nodeID, nodeEdges)
 	}
 	
-	fmt.Printf("DEBUG: Total edges generated: %d\n", len(edges))
+	// fmt.Printf("DEBUG: Total edges generated: %d\n", len(edges))
 	return edges
 }
 
@@ -1161,6 +1161,7 @@ func aggregateEdges(leafEdges []Edge, nodeToComm map[string]string) []Edge {
 		if !fromExists || !toExists {
 			continue // Skip edges involving nodes not in this level
 		}
+		// fmt.Printf("DEBUG: Processing edge %s -> %s (weight %.6f) in communities %s -> %s\n", edge.From, edge.To, edge.Weight, fromComm, toComm)
 		
 		// Create edge key (use consistent ordering for undirected edges)
 		var edgeKey string
@@ -1169,7 +1170,7 @@ func aggregateEdges(leafEdges []Edge, nodeToComm map[string]string) []Edge {
 		} else {
 			edgeKey = toComm + "|" + fromComm
 		}
-		
+		// fmt.Printf("DEBUG: Edge key: %s\n", edgeKey)
 		edgeWeights[edgeKey] += edge.Weight
 	}
 	

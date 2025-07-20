@@ -299,13 +299,18 @@ func (sc *SketchComputer) edgeMapParallel(G *GraphStructure, vs *VertexSubset, f
             for i := startIdx; i < endIdx; i++ {
                 v := activeVertices[i]
                 for _, neighbor := range G.V[v].neighbors {
-                    if f.Cond(neighbor) {
-                        sc.vertexMutex[neighbor].Lock()
-                        if f.Update(v, neighbor) {
-                            newFrontier[neighbor] = true
-                        }
-                        sc.vertexMutex[neighbor].Unlock()
-                    }
+		
+if f.Cond(neighbor) {
+    sc.vertexMutex[neighbor].Lock()
+    if f.Update(v, neighbor) {
+        newFrontier[neighbor] = true
+    }
+    sc.vertexMutex[neighbor].Unlock()
+}
+
+                    // if f.Cond(neighbor) && f.Update(v, neighbor) {
+                    //     newFrontier[neighbor] = true
+                    // }
                 }
             }
         }(start, end)

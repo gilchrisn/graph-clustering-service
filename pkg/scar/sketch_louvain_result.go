@@ -197,6 +197,7 @@ func (slr *SketchLouvainResult) BuildHierarchy() {
 	slr.mapping = make(map[string][]int64)
 	
 	for level := 0; level < len(slr.levels); level++ {
+		fmt.Printf("Building hierarchy for level %d\n", level)
 		if level == 0 {
 			// Level 0: map communities to original nodes
 			for commID, nodes := range slr.levels[level].communityToNodes {
@@ -427,6 +428,7 @@ func (slr *SketchLouvainResult) writeSketchFile(config SCARConfig) error {
                     formattedId = fmt.Sprintf("%d", nodeId)
                 } else {
                     // Level 1+: map back to original community ID
+
                     originalId := reverseMapping[nodeId]
                     formattedId = fmt.Sprintf("c0_l%d_%d", level, originalId)
                 }
