@@ -168,7 +168,7 @@ for _, neighborComm := range sortedCommunities {
 		// Phase 2: Community aggregation (create super-graph)
 		
 		if !totalImprovement {
-			if phase == 0 {
+			if true {
 				// Force all nodes into a single community
 				fmt.Println("No improvement in phase 0, forcing all nodes into a single community...")
 

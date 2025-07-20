@@ -69,6 +69,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	matLvl0 := filepath.Join(outputDir, "materialization", "hierarchy", "level_0.edgelist")
+	scarLvl0 := filepath.Join(outputDir, "scar",          "hierarchy", "level_0.edgelist")
+	jaccard, err := computeJaccardSimilarity(matLvl0, scarLvl0)
+	if err != nil {
+		fmt.Printf("⚠️  failed to compare lowest‐level graphs: %v\n", err)
+	} else {
+		fmt.Printf("🧮 Jaccard similarity (level 0): %.4f\n", jaccard)
+	}
+	
 	fmt.Println("✅ Pipeline completed!")
 
 }
@@ -1094,6 +1103,45 @@ func RunSketchLouvain(graphFile, propertiesFile, pathFile string, config *Pipeli
 	}
 	
 	return result, nil
+}
+
+
+func computeJaccardSimilarity(fileA, fileB string) (float64, error) {
+    edgesA, err := loadEdges(fileA)
+    if err != nil {
+        return 0, fmt.Errorf("loading %s: %w", fileA, err)
+    }
+    edgesB, err := loadEdges(fileB)
+    if err != nil {
+        return 0, fmt.Errorf("loading %s: %w", fileB, err)
+    }
+
+    // Build sets of canonical undirected edges
+    setA := make(map[string]struct{})
+    for _, e := range edgesA {
+        u, v := e.From, e.To
+        if u > v { u, v = v, u }
+        setA[u+"|"+v] = struct{}{}
+    }
+    setB := make(map[string]struct{})
+    for _, e := range edgesB {
+        u, v := e.From, e.To
+        if u > v { u, v = v, u }
+        setB[u+"|"+v] = struct{}{}
+    }
+
+    // Count intersection and union
+    intersection := 0
+    for k := range setA {
+        if _, ok := setB[k]; ok {
+            intersection++
+        }
+    }
+    union := len(setA) + len(setB) - intersection
+    if union == 0 {
+        return 0, nil
+    }
+    return float64(intersection) / float64(union), nil
 }
 
 // PipelineType defines which pipeline to run
