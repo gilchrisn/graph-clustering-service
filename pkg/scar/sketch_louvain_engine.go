@@ -167,16 +167,46 @@ for _, neighborComm := range sortedCommunities {
 
 		// Phase 2: Community aggregation (create super-graph)
 		
-		sle.aggregateCommunities()
 		if !totalImprovement {
 			if phase == 0 {
-				// if no improvement in first phase, put everything in one community
-				sle.aggregateCommunities()
-			}
-			break
-		}
-		
+				// Force all nodes into a single community
+				fmt.Println("No improvement in phase 0, forcing all nodes into a single community...")
 
+				singleCommunityId := int64(0)
+				var allNodes []int64
+
+				// Collect all nodes that currently belong to any community
+				for nodeId := int64(0); nodeId < sle.sketchLouvainState.n; nodeId++ {
+					if sle.sketchLouvainState.GetVertexSketch(nodeId) == nil {
+						continue
+					}
+					allNodes = append(allNodes, nodeId)
+					sle.sketchLouvainState.nodeToCommunity[nodeId] = singleCommunityId
+				}
+
+				// Replace community map
+				sle.sketchLouvainState.communityToNodes = map[int64][]int64{
+					singleCommunityId: allNodes,
+				}
+
+				// Reset active communities
+				sle.sketchLouvainState.activeCommunities = map[int64]bool{
+					singleCommunityId: true,
+				}
+
+				// Update the community sketch for this single community
+				sle.sketchLouvainState.sketchManager.UpdateCommunitySketch(singleCommunityId, allNodes)
+
+				// Now aggregate as usual
+				sle.aggregateCommunities()
+
+				break
+			} 
+			
+		} 
+
+		sle.aggregateCommunities()
+		
 		phase++
 	}
 
