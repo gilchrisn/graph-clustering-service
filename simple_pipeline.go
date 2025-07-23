@@ -195,7 +195,7 @@ func NewPipelineConfig() *PipelineConfig {
 		
 		// Default SCAR config
 		SCARConfig: scar.SCARConfig{
-			K:           3,
+			K:           256,
 			NK:          1,
 			Threshold:   0.5,
 			UseLouvain:  true,
@@ -251,6 +251,7 @@ func runMaterializationLouvain(graphFile, propertiesFile, pathFile, outputDir st
 func runScar(graphFile, propertiesFile, pathFile, outputDir string) error {
 	// Create default configuration exactly like your original code
 	config := NewPipelineConfig()
+	
 	config.OutputDir = outputDir
 	config.OutputPrefix = "communities"
 	config.Verbose = true
