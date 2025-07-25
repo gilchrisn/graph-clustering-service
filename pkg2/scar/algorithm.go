@@ -1,27 +1,28 @@
-package louvain
+package scar
 
 import (
 	"context"
 	"fmt"
-	// "math"
 	"math/rand"
 	"runtime"
-	// "sort"
 	"time"
 	
 	"github.com/rs/zerolog"
+	"github.com/gilchrisn/graph-clustering-service/pkg2/utils"
 )
 
-// Result represents the algorithm output
+// Result represents the algorithm output 
 type Result struct {
 	Levels           []LevelInfo          `json:"levels"`
 	FinalCommunities map[int]int          `json:"final_communities"`
 	Modularity       float64              `json:"modularity"`
 	NumLevels        int                  `json:"num_levels"`
 	Statistics       Statistics           `json:"statistics"`
+
+    NodeMapping      *NodeMapping         `json:"node_mapping,omitempty"`
 }
 
-// LevelInfo contains information about each hierarchical level
+// LevelInfo contains information about each hierarchical level 
 type LevelInfo struct {
 	Level          int             `json:"level"`
 	Communities    map[int][]int   `json:"communities"`
@@ -31,7 +32,7 @@ type LevelInfo struct {
 	RuntimeMS      int64           `json:"runtime_ms"`
 }
 
-// Statistics contains algorithm performance metrics
+// Statistics contains algorithm performance metrics 
 type Statistics struct {
 	TotalIterations int           `json:"total_iterations"`
 	TotalMoves      int           `json:"total_moves"`
@@ -40,7 +41,7 @@ type Statistics struct {
 	LevelStats      []LevelStats  `json:"level_stats"`
 }
 
-// LevelStats contains per-level statistics
+// LevelStats contains per-level statistics 
 type LevelStats struct {
 	Level             int     `json:"level"`
 	Iterations        int     `json:"iterations"`
@@ -50,17 +51,20 @@ type LevelStats struct {
 	RuntimeMS         int64   `json:"runtime_ms"`
 }
 
-// Community represents the state of communities (simple arrays, NetworkX style)
+// Community represents the state of communities (IDENTICAL to Louvain + sketch management)
 type Community struct {
 	NodeToCommunity []int     // nodeToComm[i] = community ID of node i
 	CommunityNodes  [][]int   // commNodes[c] = list of nodes in community c
 	CommunityWeights []float64 // commWeights[c] = total weight of community c
 	CommunityInternalWeights []float64 // commInternal[c] = internal weight of community c
 	NumCommunities  int       // number of communities
+	
+	// SCAR-specific: community sketches
+	communitySketches map[int]*VertexBottomKSketch
 }
 
-// NewCommunity initializes each node in its own community
-func NewCommunity(graph *Graph) *Community {
+// NewCommunity initializes each node in its own community (MODIFIED for sketches)
+func NewCommunity(graph *SketchGraph) *Community {
 	n := graph.NumNodes
 	comm := &Community{
 		NodeToCommunity:          make([]int, n),
@@ -68,21 +72,25 @@ func NewCommunity(graph *Graph) *Community {
 		CommunityWeights:         make([]float64, n),
 		CommunityInternalWeights: make([]float64, n),
 		NumCommunities:          n,
+		communitySketches:        make(map[int]*VertexBottomKSketch),
 	}
 	
 	// Initialize each node in its own community
 	for i := 0; i < n; i++ {
 		comm.NodeToCommunity[i] = i
 		comm.CommunityNodes[i] = []int{i}
-		comm.CommunityWeights[i] = graph.Degrees[i]
+		comm.CommunityWeights[i] = graph.GetDegree(i)                    
 		comm.CommunityInternalWeights[i] = graph.GetEdgeWeight(i, i) * 2 // self-loops count double
+		
+		// Initialize community sketch (copy of node sketch)
+		graph.UpdateCommunitySketch(i, []int{i}, comm)
 	}
 	
 	return comm
 }
 
-// CalculateModularity computes Newman's modularity
-func CalculateModularity(graph *Graph, comm *Community) float64 {
+// CalculateModularity computes Newman's modularity 
+func CalculateModularity(graph *SketchGraph, comm *Community) float64 {
 	if graph.TotalWeight == 0 {
 		return 0.0
 	}
@@ -104,36 +112,27 @@ func CalculateModularity(graph *Graph, comm *Community) float64 {
 	return modularity
 }
 
-// CalculateModularityGain computes the modularity gain from moving a node
-func CalculateModularityGain(graph *Graph, comm *Community, node, targetComm int, edgeWeight float64) float64 {
-	nodeDegree := graph.Degrees[node]
+// CalculateModularityGain computes the modularity gain from moving a node 
+func CalculateModularityGain(graph *SketchGraph, comm *Community, node, targetComm int, edgeWeight float64) float64 {
+	nodeDegree := graph.GetDegree(node)                    
 	commTotal := comm.CommunityWeights[targetComm]
 	m2 := 2.0 * graph.TotalWeight
 		
 	return edgeWeight - (nodeDegree*commTotal)/m2
 }
 
-// GetEdgeWeightToComm calculates total edge weight from node to community
-func GetEdgeWeightToComm(graph *Graph, comm *Community, node, targetComm int) float64 {
-	weight := 0.0
-	neighbors, weights := graph.GetNeighbors(node)
-	
-	for i, neighbor := range neighbors {
-		if comm.NodeToCommunity[neighbor] == targetComm {
-			weight += weights[i]
-		}
-	}
-	
-	return weight
+// GetEdgeWeightToComm calculates total edge weight from node to community (SKETCH-BASED)
+func GetEdgeWeightToComm(graph *SketchGraph, comm *Community, node, targetComm int) float64 {
+	return graph.EstimateEdgesToCommunity(node, targetComm, comm)
 }
 
-// MoveNode moves a node to a different community
-func MoveNode(graph *Graph, comm *Community, node, oldComm, newComm int) {
+// MoveNode moves a node to a different community (IDENTICAL to Louvain + sketch updates)
+func MoveNode(graph *SketchGraph, comm *Community, node, oldComm, newComm int) {
 	if oldComm == newComm {
 		return
 	}
 	
-	nodeDegree := graph.Degrees[node]
+	nodeDegree := graph.GetDegree(node)                   
 	
 	// Remove from old community
 	oldNodes := comm.CommunityNodes[oldComm]
@@ -143,34 +142,53 @@ func MoveNode(graph *Graph, comm *Community, node, oldComm, newComm int) {
 			break
 		}
 	}
+
+	// Update old community sketch
+	if len(comm.CommunityNodes[oldComm]) > 0 {
+		graph.UpdateCommunitySketch(oldComm, comm.CommunityNodes[oldComm], comm)
+	} else {
+		delete(comm.communitySketches, oldComm)
+	}
 	
 	// Update old community weights
+	if comm.communitySketches[oldComm] != nil && comm.communitySketches[oldComm].IsSketchFull() {
+		comm.CommunityWeights[oldComm] = graph.EstimateCommunityCardinality(oldComm, comm)
+	} else {
+		comm.CommunityWeights[oldComm] -= nodeDegree
+	}
 	oldWeight := GetEdgeWeightToComm(graph, comm, node, oldComm)
-	comm.CommunityWeights[oldComm] -= nodeDegree
 	comm.CommunityInternalWeights[oldComm] -= 2 * oldWeight
 	
 	// Add to new community
 	comm.CommunityNodes[newComm] = append(comm.CommunityNodes[newComm], node)
 	comm.NodeToCommunity[node] = newComm
 	
+	// Update new community sketch
+	graph.UpdateCommunitySketch(newComm, comm.CommunityNodes[newComm], comm)
+
 	// Update new community weights
+	if comm.communitySketches[newComm] != nil && comm.communitySketches[newComm].IsSketchFull() {
+		comm.CommunityWeights[newComm] = graph.EstimateCommunityCardinality(newComm, comm)
+	} else {
+		comm.CommunityWeights[newComm] += nodeDegree
+	}
 	newWeight := GetEdgeWeightToComm(graph, comm, node, newComm)
-	selfLoop := graph.GetEdgeWeight(node, node)
-	comm.CommunityWeights[newComm] += nodeDegree
+	selfLoop := graph.GetEdgeWeight(node, node)           
 	comm.CommunityInternalWeights[newComm] += 2 * (newWeight + selfLoop)
+	
 }
 
-// OneLevel performs one level of local optimization
-func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logger) (bool, int, error) {
+// OneLevel performs one level of local optimization (IDENTICAL structure, sketch data)
+func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolog.Logger) (bool, int, error) {
 	improvement := false
 	totalMoves := 0
 	rng := rand.New(rand.NewSource(config.RandomSeed()))
 	
-	var moveTracker *MoveTracker
-    if config.EnableMoveTracking() {
-        moveTracker = NewMoveTracker(config.TrackingOutputFile(), "louvain")
-        defer moveTracker.Close()
-    }
+	var moveTracker *utils.MoveTracker
+	if config.EnableMoveTracking() {
+		moveTracker = utils.NewMoveTracker(config.TrackingOutputFile(), "louvain")
+		defer moveTracker.Close()
+	}
 
 	// Create node processing order
 	nodes := make([]int, graph.NumNodes)
@@ -190,19 +208,8 @@ func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logg
 			bestComm := oldComm
 			bestGain := 0.0
 			
-			// Find neighbor communities
-			neighborComms := make(map[int]float64)
-			neighbors, weights := graph.GetNeighbors(node)
-			
-			for i, neighbor := range neighbors {
-				nComm := comm.NodeToCommunity[neighbor]
-				neighborComms[nComm] += weights[i]
-			}
-			
-			// Include current community
-			if _, exists := neighborComms[oldComm]; !exists {
-				neighborComms[oldComm] = 0.0
-			}
+			// Find neighbor communities (SKETCH-BASED)
+			neighborComms := graph.FindNeighboringCommunities(node, comm)
 			
 			// Find best community
 			for targetComm, edgeWeight := range neighborComms {
@@ -251,9 +258,9 @@ func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logg
 	return improvement, totalMoves, nil
 }
 
-// AggregateGraph creates a super-graph from communities
-func AggregateGraph(graph *Graph, comm *Community, logger zerolog.Logger) (*Graph, [][]int, error) {
-	// Find non-empty communities
+// AggregateGraph creates a super-graph from communities (MODIFIED for sketches)
+func AggregateGraph(graph *SketchGraph, comm *Community, logger zerolog.Logger) (*SketchGraph, [][]int, error) {
+	// Find non-empty communities 
 	validComms := make([]int, 0)
 	for c := 0; c < comm.NumCommunities; c++ {
 		if len(comm.CommunityNodes[c]) > 0 {
@@ -266,7 +273,7 @@ func AggregateGraph(graph *Graph, comm *Community, logger zerolog.Logger) (*Grap
 		return nil, nil, fmt.Errorf("no valid communities found")
 	}
 	
-	// Create community mapping
+	// Create community mapping 
 	commToSuper := make(map[int]int)
 	communityMapping := make([][]int, numSuperNodes)
 	
@@ -276,50 +283,13 @@ func AggregateGraph(graph *Graph, comm *Community, logger zerolog.Logger) (*Grap
 		copy(communityMapping[i], comm.CommunityNodes[commID])
 	}
 	
-	// Create super-graph
-	superGraph := NewGraph(numSuperNodes)
+	// Create super-graph with sketch aggregation
+	superGraph := NewSketchGraph(numSuperNodes)
 	
-	// Calculate super-edge weights
-	superEdges := make(map[[2]int]float64)
-	
-	for node := 0; node < graph.NumNodes; node++ {
-		nodeComm := comm.NodeToCommunity[node]
-		superI, exists := commToSuper[nodeComm]
-		if !exists {
-			continue
-		}
-		
-		neighbors, weights := graph.GetNeighbors(node)
-		for i, neighbor := range neighbors {
-			neighborComm := comm.NodeToCommunity[neighbor]
-			superJ, exists := commToSuper[neighborComm]
-			if !exists {
-				continue
-			}
-			
-			// Create edge key (sorted for undirected graph)
-			var edge [2]int
-			if superI <= superJ {
-				edge = [2]int{superI, superJ}
-			} else {
-				edge = [2]int{superJ, superI}
-			}
-			
-			if neighbor == node {
-				// Self-loop: count double because it will be divided by 2 later
-				superEdges[edge] += 2 * weights[i]
-			} else {
-				// Regular edge: count once (will be encountered twice, then divided by 2)  
-				superEdges[edge] += weights[i]
-			}
-		}
-	}
-	
-	// Add edges to super-graph
-	for edge, weight := range superEdges {
-		if weight > 0 {
-			superGraph.AddEdge(edge[0], edge[1], weight/2) // Divide by 2 for undirected
-		}
+	// Aggregate sketches for super-nodes
+	err := superGraph.AggregateFromPreviousLevel(graph, commToSuper, comm)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sketch aggregation failed: %w", err)
 	}
 	
 	logger.Info().
@@ -331,15 +301,27 @@ func AggregateGraph(graph *Graph, comm *Community, logger zerolog.Logger) (*Grap
 	return superGraph, communityMapping, nil
 }
 
-// Run executes the complete Louvain algorithm
-func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
+// Run executes the complete SCAR algorithm (IDENTICAL structure + sketch preprocessing)
+func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context.Context) (*Result, error) {
 	startTime := time.Now()
 	logger := config.CreateLogger()
 	
 	logger.Info().
+		Str("graph_file", graphFile).
+		Str("properties_file", propertiesFile).
+		Str("path_file", pathFile).
+		Msg("Starting SCAR algorithm")
+	
+	// SCAR-SPECIFIC: Sketch preprocessing
+    graph, nodeMapping, err := BuildSketchGraph(graphFile, propertiesFile, pathFile, config, logger)
+    if err != nil {
+        return nil, fmt.Errorf("sketch preprocessing failed: %w", err)
+    }
+	
+	logger.Info().
 		Int("nodes", graph.NumNodes).
 		Float64("total_weight", graph.TotalWeight).
-		Msg("Starting Louvain algorithm")
+		Msg("Sketch preprocessing completed, starting Louvain")
 	
 	// Validate input graph
 	if err := graph.Validate(); err != nil {
@@ -351,9 +333,9 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 		Statistics: Statistics{LevelStats: make([]LevelStats, 0)},
 	}
 	
-	// Initialize community structure and mapping tracking
+	// Initialize community structure and mapping tracking 
 	comm := NewCommunity(graph)
-	currentGraph := graph.Clone()
+	currentGraph := graph
 	
 	// Track mapping from current level nodes back to original nodes
 	nodeToOriginal := make([][]int, graph.NumNodes)
@@ -361,7 +343,7 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 		nodeToOriginal[i] = []int{i} // Initially, each node maps to itself
 	}
 	
-	// Main hierarchical loop
+	// Main hierarchical loop 
 	for level := 0; level < config.MaxLevels(); level++ {
 		levelStart := time.Now()
 		initialMod := CalculateModularity(currentGraph, comm)
@@ -381,7 +363,7 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 		finalMod := CalculateModularity(currentGraph, comm)
 		levelTime := time.Since(levelStart)
 		
-		// Record level information with ORIGINAL node IDs
+		// Record level information with ORIGINAL node IDs 
 		levelInfo := LevelInfo{
 			Level:          level,
 			Communities:    make(map[int][]int),
@@ -421,7 +403,7 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 		}
 		result.Statistics.LevelStats = append(result.Statistics.LevelStats, levelStats)
 		
-		// Check termination conditions
+		// Check termination conditions 
 		if !improvement {
 			logger.Info().Int("level", level).Msg("No improvement, stopping")
 			break
@@ -444,7 +426,7 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 			break
 		}
 		
-		// Update node-to-original mapping for next level
+		// Update node-to-original mapping for next level 
 		newNodeToOriginal := make([][]int, superGraph.NumNodes)
 		for superNodeID, originalNodesList := range communityMapping {
 			newNodeToOriginal[superNodeID] = make([]int, 0)
@@ -466,31 +448,31 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 		}
 	}
 	
-	// Finalize results
+	// Finalize results 
 	result.NumLevels = len(result.Levels)
 	result.Modularity = CalculateModularity(currentGraph, comm)
 	result.Statistics.RuntimeMS = time.Since(startTime).Milliseconds()
 	result.Statistics.MemoryPeakMB = getMemoryUsage()
 	
 	// Build final community assignments using ORIGINAL node IDs
-	result.FinalCommunities = make(map[int]int)
-	for superNode := 0; superNode < currentGraph.NumNodes; superNode++ {
-		finalCommID := comm.NodeToCommunity[superNode]
-		for _, originalNode := range nodeToOriginal[superNode] {
-			result.FinalCommunities[originalNode] = finalCommID
-		}
-	}
+    result.FinalCommunities = make(map[int]int)
+    for compressedNode := 0; compressedNode < currentGraph.NumNodes; compressedNode++ {
+        finalCommID := comm.NodeToCommunity[compressedNode]
+        originalNode := nodeMapping.CompressedToOriginal[compressedNode]
+        result.FinalCommunities[originalNode] = finalCommID
+    }
+    result.NodeMapping = nodeMapping
 	
 	logger.Info().
 		Int("levels", result.NumLevels).
 		Float64("final_modularity", result.Modularity).
 		Int64("runtime_ms", result.Statistics.RuntimeMS).
-		Msg("Louvain algorithm completed")
+		Msg("SCAR algorithm completed")
 	
 	return result, nil
 }
 
-// getMemoryUsage returns current memory usage in MB
+// getMemoryUsage returns current memory usage in MB 
 func getMemoryUsage() int64 {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
