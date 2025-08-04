@@ -193,7 +193,7 @@ func readPath(filename string) ([]uint32, int64, error) {
 // computeSketches performs the sketch propagation algorithm
 func computeSketches(rawGraph *RawGraph, properties []uint32, path []uint32, pathLength int64, config *Config) ([]uint32, []uint32, error) {
 	n := int64(rawGraph.NumNodes)
-	propK := config.K() + 1 // +1 to accomodate for self hash
+	propK := config.K() + 1 // +1 to accommodate for self hash
 	nk := config.NK()
 	
 	// Initialize sketch storage
@@ -204,24 +204,52 @@ func computeSketches(rawGraph *RawGraph, properties []uint32, path []uint32, pat
 	
 	nodeHashValues := make([]uint32, n*nk)
 	
+	// GLOBAL hash deduplication set
+	usedHashes := make(map[uint32]struct{})
+	// Reserve MaxUint32 as sentinel value
+	usedHashes[math.MaxUint32] = struct{}{}
+	
 	// Initialize frontier with nodes having the first label
+	// rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	rng := rand.New(rand.NewSource(config.RandomSeed() + 1))
 	firstLabel := path[0]
+	
+	// Helper function to generate unique hash
+	generateUniqueHash := func() uint32 {
+		maxAttempts := 1000 // Prevent infinite loops
+		for attempts := 0; attempts < maxAttempts; attempts++ {
+			candidate := rng.Uint32()
+			
+			// Check if hash is already used
+			if _, exists := usedHashes[candidate]; !exists {
+				usedHashes[candidate] = struct{}{}
+				return candidate
+			}
+		}
+		
+		// Fallback: linear search for unused value (should be extremely rare)
+		for candidate := uint32(0); candidate < math.MaxUint32; candidate++ {
+			if _, exists := usedHashes[candidate]; !exists {
+				usedHashes[candidate] = struct{}{}
+				return candidate
+			}
+		}
+		
+		// Should never reach here with reasonable graph sizes
+		panic("unable to generate unique hash - hash space exhausted")
+	}
 	
 	for i := int64(0); i < n; i++ {
 		if properties[i] == firstLabel {
 			for j := int64(0); j < nk; j++ {
-				uniformValue := rng.Uint32()
-				if uniformValue == math.MaxUint32 {
-					uniformValue--
-				}
-				sketches[j*n*propK+i*propK] = uniformValue
-				nodeHashValues[i*nk+j] = uniformValue + 1
+				uniqueHash := generateUniqueHash()
+				sketches[j*n*propK+i*propK] = uniqueHash
+				nodeHashValues[i*nk+j] = uniqueHash + 1
 			}
 		}
 	}
 	
-	// Propagate sketches along the path
+	// Propagate sketches along the path (unchanged - union handles duplicates correctly)
 	for iter := int64(1); iter < pathLength; iter++ {
 		currentLabel := path[iter]
 		
@@ -231,11 +259,11 @@ func computeSketches(rawGraph *RawGraph, properties []uint32, path []uint32, pat
 				continue
 			}
 		
-			// Union sketches from all neighbors (CORRECTED)
+			// Union sketches from all neighbors
 			for _, neighbor := range rawGraph.Adjacency[node] {
 				for layer := int64(0); layer < nk; layer++ {
-					srcIdx := (iter-1)*n*nk*propK + neighbor*nk*propK + layer*propK
-					dstIdx := iter*n*nk*propK + node*nk*propK + layer*propK
+					srcIdx := (iter-1)*n*nk*propK + layer*n*propK + neighbor*propK 
+					dstIdx := iter*n*nk*propK + layer*n*propK + node*propK
 
 					// Extract source and destination sketches
 					srcSketch := make([]uint32, propK)
@@ -322,7 +350,7 @@ func buildSketchGraphFromSketches(rawGraph *RawGraph, sketches []uint32, nodeHas
 	finalK := config.K()
 	propK := finalK + 1 // +1 to accommodate for self hash
 	nk := config.NK()
-	
+
 	// Pre-build per-node self-hash set (for all original nodes - needed for sketch filtering)
 	selfHashes := make([]map[uint32]struct{}, n)
 	for i := int64(0); i < int64(n); i++ {
@@ -348,7 +376,7 @@ func buildSketchGraphFromSketches(rawGraph *RawGraph, sketches []uint32, nodeHas
 				
 				for ki := int64(0); ki < propK; ki++ {
 					// Use originalId to access sketch data (sketches computed for all nodes)
-					idx := layer*int64(n)*propK + int64(originalId)*propK + ki 
+					idx := layer*int64(n)*propK + int64(originalId)*propK + ki
 					if int(idx) >= len(sketches) {
 						break
 					}
@@ -467,11 +495,10 @@ func hasNonEmptySketch(originalId int, sketches []uint32, selfHashSet map[uint32
     // Check if any layer has non-self content
     for layer := int64(0); layer < nk; layer++ {
         for ki := int64(0); ki < propK; ki++ {
-            idx := layer*n*propK + int64(originalId)*propK + ki
+			idx := layer*int64(n)*propK + int64(originalId)*propK + ki
             if int(idx) >= len(sketches) {
                 break
             }
-            
             v := sketches[idx]
             if v == math.MaxUint32 {
                 break // Remaining are empty

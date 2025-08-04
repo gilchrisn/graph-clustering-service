@@ -28,17 +28,20 @@ func main() {
 	
 	// Create configuration with LARGE K for exact computation
 	config := scar.NewConfig()
-	config.Set("algorithm.max_iterations", 5)
+	config.Set("algorithm.max_iterations", 50)
 	config.Set("algorithm.min_modularity_gain", 1e-6)
 	config.Set("logging.level", "info")
+	config.Set("analysis.track_moves", true)
+	config.Set("analysis.output_file", "scar_moves.jsonl")
 	
 	// LARGE K ensures sketches are never full → exact computation (same as Louvain)
-	config.Set("scar.k", 64)    // Large K for exact computation
+	config.Set("scar.k", 512)    // Large K for exact computation
 	config.Set("scar.nk", 1)     // Multiple layers
 	config.Set("scar.threshold", 0.0)
 
 	// Set random seed for reproducibility
 	config.Set("algorithm.random_seed", int64(42)) 
+	// config.Set("algorithm.random_seed", int64(time.Now().UnixNano())) // Use current time for randomness
 	
 	fmt.Printf("\nSCAR Configuration:\n")
 	fmt.Printf("  K: %d (large → exact computation)\n", config.K())
@@ -71,15 +74,15 @@ func displayResults(result *scar.Result) {
 		fmt.Printf("  Moves: %d\n", level.NumMoves)
 		fmt.Printf("  Runtime: %d ms\n", level.RuntimeMS)
 		
-		fmt.Printf("  Community assignments:\n")
-		for commID, nodes := range level.Communities {
-			fmt.Printf("    Community %d: %v\n", commID, nodes)
-		}
+		// fmt.Printf("  Community assignments:\n")
+		// for commID, nodes := range level.Communities {
+		// 	fmt.Printf("    Community %d: %v\n", commID, nodes)
+		// }
 	}
 	
-	// Print final community assignments
-	fmt.Println("\nFinal community assignments:")
-	for node, comm := range result.FinalCommunities {
-		fmt.Printf("  Node %d -> Community %d\n", node, comm)
-	}
+	// // Print final community assignments
+	// fmt.Println("\nFinal community assignments:")
+	// for node, comm := range result.FinalCommunities {
+	// 	fmt.Printf("  Node %d -> Community %d\n", node, comm)
+	// }
 }

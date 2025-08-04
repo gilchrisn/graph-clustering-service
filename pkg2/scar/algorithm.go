@@ -3,15 +3,17 @@ package scar
 import (
 	"context"
 	"fmt"
+	// "math"
 	"math/rand"
 	"runtime"
 	"time"
-	
+
 	"github.com/rs/zerolog"
+
 	"github.com/gilchrisn/graph-clustering-service/pkg2/utils"
 )
 
-// Result represents the algorithm output 
+// Result represents the algorithm output
 type Result struct {
 	Levels           []LevelInfo          `json:"levels"`
 	FinalCommunities map[int]int          `json:"final_communities"`
@@ -117,7 +119,11 @@ func CalculateModularityGain(graph *SketchGraph, comm *Community, node, targetCo
 	nodeDegree := graph.GetDegree(node)                    
 	commTotal := comm.CommunityWeights[targetComm]
 	m2 := 2.0 * graph.TotalWeight
-		
+
+
+	// gain := edgeWeight - (nodeDegree*commTotal)/m2
+	// fmt.Printf("Calculating modularity gain for node %d to community %d: edgeWeight=%.6f, nodeDegree=%.6f, commTotal=%.6f, m2=%.6f, gain=%.6f\n", node, targetComm, edgeWeight, nodeDegree, commTotal, m2, gain)
+
 	return edgeWeight - (nodeDegree*commTotal)/m2
 }
 
@@ -126,7 +132,7 @@ func GetEdgeWeightToComm(graph *SketchGraph, comm *Community, node, targetComm i
 	return graph.EstimateEdgesToCommunity(node, targetComm, comm)
 }
 
-// MoveNode moves a node to a different community (IDENTICAL to Louvain + sketch updates)
+// MoveNode moves a node to a different community 
 func MoveNode(graph *SketchGraph, comm *Community, node, oldComm, newComm int) {
 	if oldComm == newComm {
 		return
@@ -143,6 +149,8 @@ func MoveNode(graph *SketchGraph, comm *Community, node, oldComm, newComm int) {
 		}
 	}
 
+	wasFull := comm.communitySketches[oldComm] != nil && comm.communitySketches[oldComm].IsSketchFull()
+
 	// Update old community sketch
 	if len(comm.CommunityNodes[oldComm]) > 0 {
 		graph.UpdateCommunitySketch(oldComm, comm.CommunityNodes[oldComm], comm)
@@ -151,10 +159,10 @@ func MoveNode(graph *SketchGraph, comm *Community, node, oldComm, newComm int) {
 	}
 	
 	// Update old community weights
-	if comm.communitySketches[oldComm] != nil && comm.communitySketches[oldComm].IsSketchFull() {
+	if comm.communitySketches[oldComm] != nil && (comm.communitySketches[oldComm].IsSketchFull() || wasFull) {
 		comm.CommunityWeights[oldComm] = graph.EstimateCommunityCardinality(oldComm, comm)
 	} else {
-		comm.CommunityWeights[oldComm] -= nodeDegree
+		comm.CommunityWeights[oldComm] -= nodeDegree	
 	}
 	oldWeight := GetEdgeWeightToComm(graph, comm, node, oldComm)
 	comm.CommunityInternalWeights[oldComm] -= 2 * oldWeight
@@ -175,20 +183,13 @@ func MoveNode(graph *SketchGraph, comm *Community, node, oldComm, newComm int) {
 	newWeight := GetEdgeWeightToComm(graph, comm, node, newComm)
 	selfLoop := graph.GetEdgeWeight(node, node)           
 	comm.CommunityInternalWeights[newComm] += 2 * (newWeight + selfLoop)
-	
 }
 
 // OneLevel performs one level of local optimization (IDENTICAL structure, sketch data)
-func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolog.Logger) (bool, int, error) {
+func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolog.Logger, moveTracker *utils.MoveTracker) (bool, int, error) {
 	improvement := false
 	totalMoves := 0
 	rng := rand.New(rand.NewSource(config.RandomSeed()))
-	
-	var moveTracker *utils.MoveTracker
-	if config.EnableMoveTracking() {
-		moveTracker = utils.NewMoveTracker(config.TrackingOutputFile(), "louvain")
-		defer moveTracker.Close()
-	}
 
 	// Create node processing order
 	nodes := make([]int, graph.NumNodes)
@@ -206,13 +207,14 @@ func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolo
 		for _, node := range nodes {
 			oldComm := comm.NodeToCommunity[node]
 			bestComm := oldComm
-			bestGain := 0.0
-			
+			bestGain := 0.0 // Start with zero
+
 			// Find neighbor communities (SKETCH-BASED)
 			neighborComms := graph.FindNeighboringCommunities(node, comm)
 			
 			// Find best community
 			for targetComm, edgeWeight := range neighborComms {
+
 				if len(comm.CommunityNodes[targetComm]) == 0 {
 					continue
 				}
@@ -231,7 +233,7 @@ func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolo
 				improvement = true
 
                 if moveTracker != nil {
-                    moveTracker.LogMove(totalMoves, node, oldComm, bestComm, bestGain, 
+                    moveTracker.LogMove(totalMoves + iterationMoves, node, oldComm, bestComm, bestGain, 
                                       CalculateModularity(graph, comm))
                 }
 			}
@@ -306,6 +308,12 @@ func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context
 	startTime := time.Now()
 	logger := config.CreateLogger()
 	
+    var moveTracker *utils.MoveTracker
+    if config.EnableMoveTracking() {
+        moveTracker = utils.NewMoveTracker(config.TrackingOutputFile(), "scar")
+        defer moveTracker.Close()
+    }
+
 	logger.Info().
 		Str("graph_file", graphFile).
 		Str("properties_file", propertiesFile).
@@ -317,7 +325,7 @@ func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context
     if err != nil {
         return nil, fmt.Errorf("sketch preprocessing failed: %w", err)
     }
-	
+
 	logger.Info().
 		Int("nodes", graph.NumNodes).
 		Float64("total_weight", graph.TotalWeight).
@@ -355,7 +363,7 @@ func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context
 			Msg("Starting level")
 		
 		// Phase 1: Local optimization
-		improvement, moves, err := OneLevel(currentGraph, comm, config, logger)
+		improvement, moves, err := OneLevel(currentGraph, comm, config, logger, moveTracker)
 		if err != nil {
 			return nil, fmt.Errorf("local optimization failed at level %d: %w", level, err)
 		}
@@ -477,4 +485,42 @@ func getMemoryUsage() int64 {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	return int64(m.Alloc / 1024 / 1024)
+}
+
+
+// DEBUGGING FUNCTIONS
+
+
+// HasCommunitySketch checks if a community has a sketch
+func (c *Community) HasCommunitySketch(commID int) bool {
+	return c.communitySketches != nil && c.communitySketches[commID] != nil
+}
+
+// GetCommunitySketch returns the sketch for a specific community (can be nil)
+func (c *Community) GetCommunitySketch(commID int) *VertexBottomKSketch {
+	if c.communitySketches == nil {
+		return nil
+	}
+	return c.communitySketches[commID]
+}
+
+// GetCommunitySketchCount returns the total number of communities with sketches
+func (c *Community) GetCommunitySketchCount() int {
+	if c.communitySketches == nil {
+		return 0
+	}
+	return len(c.communitySketches)
+}
+
+// GetAllCommunitySketchIDs returns a slice of all community IDs that have sketches
+func (c *Community) GetAllCommunitySketchIDs() []int {
+	if c.communitySketches == nil {
+		return nil
+	}
+	
+	ids := make([]int, 0, len(c.communitySketches))
+	for commID := range c.communitySketches {
+		ids = append(ids, commID)
+	}
+	return ids
 }

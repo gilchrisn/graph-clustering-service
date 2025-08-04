@@ -131,7 +131,7 @@ func runSCARPipeline(graphFile, propertiesFile, pathFile string) *scar.Result {
 	config.Set("logging.level", "info")
 	
 	// LARGE K ensures sketches are never full → exact computation (same as Louvain)
-	config.Set("scar.k", 351)    // Large K for exact computation
+	config.Set("scar.k", 512)    // Large K for exact computation
 	config.Set("scar.nk", 1)     // Multiple layers
 	config.Set("scar.threshold", 0.0)
 	config.Set("algorithm.random_seed", int64(42)) 

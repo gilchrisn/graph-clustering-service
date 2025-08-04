@@ -129,6 +129,11 @@ func (vbs *VertexBottomKSketch) GetLayerHashes(layer int64) []uint32 {
 	return hashes
 }
 
+// GetFilledCount returns the filled count for this sketch
+func (vbs *VertexBottomKSketch) GetFilledCount() int64 {
+	return vbs.filledCount
+}
+
 // UpdateFilledCount updates the filled count
 func (vbs *VertexBottomKSketch) UpdateFilledCount() {
 	count := int64(0)
@@ -140,6 +145,16 @@ func (vbs *VertexBottomKSketch) UpdateFilledCount() {
 		}
 	}
 	vbs.filledCount = count
+}
+
+// GetK returns the size of the sketch
+func (vbs *VertexBottomKSketch) GetK() int64 {
+	return vbs.k
+}
+
+// GetNk returns the number of layers in the sketch
+func (vbs *VertexBottomKSketch) GetNk() int64 {
+	return vbs.nk
 }
 
 // NewSketchGraph creates a new sketch graph
@@ -174,6 +189,7 @@ func (sg *SketchGraph) GetDegree(node int) float64 {
 		return degree
 	}
 }
+
 
 // GetEdgeWeight returns the weight of edge between two nodes (SKETCH-BASED)
 func (sg *SketchGraph) GetEdgeWeight(u, v int) float64 {
@@ -483,10 +499,13 @@ func (sg *SketchGraph) EstimateEdgesToCommunity(node, commId int, comm *Communit
 	
 	if !nodeSketch.IsSketchFull() {
 		return sg.countExactEdgesToCommunity(node, commId, comm)
-	} else {
+	} else if communitySketch.IsSketchFull() {
 		return sg.estimateEdgesViaInclusion(nodeSketch, communitySketch, commId, comm)
+	} else {
+		return sg.countExactEdgesToCommunityHybrid(node, commId, comm)
 	}
 }
+
 
 // countExactEdgesToCommunity counts edges directly via adjacency list
 func (sg *SketchGraph) countExactEdgesToCommunity(node, commId int, comm *Community) float64 {
@@ -498,6 +517,8 @@ func (sg *SketchGraph) countExactEdgesToCommunity(node, commId int, comm *Commun
 	}
 	return edgeCount
 }
+
+
 
 // estimateEdgesViaInclusion uses inclusion-exclusion principle
 func (sg *SketchGraph) estimateEdgesViaInclusion(nodeSketch, communitySketch *VertexBottomKSketch, commId int, comm *Community) float64 {
@@ -511,7 +532,32 @@ func (sg *SketchGraph) estimateEdgesViaInclusion(nodeSketch, communitySketch *Ve
 	
 	unionDegree := unionSketch.EstimateCardinality()
 	intersectionSize := nodeDegree + communityDegree - unionDegree
+
 	return math.Max(0, intersectionSize)
+}
+
+// countExactEdgesToCommunityHybrid - hybrid method when node sketch is full but community sketch is not full
+func (sg *SketchGraph) countExactEdgesToCommunityHybrid(node, commId int, comm *Community) float64 {
+	edgeWeight := 0.0
+	
+	// Iterate through all members of the community
+	// Since community sketch is not full, member node sketches are also not full
+	// So we can use adjacency list to get exact edge weights
+	for _, memberNode := range comm.CommunityNodes[commId] {
+		if memberNode >= len(sg.adjacencyList) {
+			continue
+		}
+		
+		// Check adjacency list of this community member for edge to target node
+		for _, edge := range sg.adjacencyList[memberNode] {
+			if edge.Neighbor == node {
+				edgeWeight += edge.Weight
+				break // Found the edge, no need to continue
+			}
+		}
+	}
+	
+	return edgeWeight
 }
 
 // FindNeighboringCommunities - CORE SCAR METHOD (all vs neighbors based on sketch fullness)
@@ -546,24 +592,40 @@ func (sg *SketchGraph) FindNeighboringCommunities(node int, comm *Community) map
 	return neighborComms
 }
 
+// ======================== 2 VERSIONS OF ESTIMATEING COMMUNITY CARDINALITY ========================
+// // EstimateCommunityCardinality estimates the cardinality of a community
+// func (sg *SketchGraph) EstimateCommunityCardinality(commId int, comm *Community) float64 {
+// 	communitySketch := comm.communitySketches[commId]
+// 	if communitySketch == nil {
+// 		return 0.0
+// 	}
+	
+// 	if communitySketch.IsSketchFull() {
+// 		return communitySketch.EstimateCardinality()
+// 	} else {
+// 		// Sum individual node degrees
+// 		degreeSum := 0.0
+// 		for _, nodeId := range comm.CommunityNodes[commId] {
+// 			degreeSum += sg.GetDegree(nodeId)
+// 		}
+// 		return degreeSum
+// 	}
+// }
+
 // EstimateCommunityCardinality estimates the cardinality of a community
 func (sg *SketchGraph) EstimateCommunityCardinality(commId int, comm *Community) float64 {
 	communitySketch := comm.communitySketches[commId]
 	if communitySketch == nil {
 		return 0.0
 	}
-	
-	if communitySketch.IsSketchFull() {
-		return communitySketch.EstimateCardinality()
-	} else {
-		// Sum individual node degrees
-		degreeSum := 0.0
-		for _, nodeId := range comm.CommunityNodes[commId] {
-			degreeSum += sg.GetDegree(nodeId)
-		}
-		return degreeSum
+
+	degreeSum := 0.0
+	for _, nodeId := range comm.CommunityNodes[commId] {
+		degreeSum += sg.GetDegree(nodeId)
 	}
+	return degreeSum
 }
+// ================================================================================================
 
 // UpdateCommunitySketch updates the sketch for a community (union of member sketches)
 func (sg *SketchGraph) UpdateCommunitySketch(commId int, memberNodes []int, comm *Community) {
@@ -660,6 +722,31 @@ func (sg *SketchGraph) buildAdjacencyList(rawGraph *RawGraph, nodeMapping *NodeM
 
 // ============================ DEBUGGING ============================
 
+// GetSketchManager returns the sketch manager (for testing)
+func (sg *SketchGraph) GetSketchManager() *SketchManager {
+	return sg.sketchManager
+}
+
+// GetFilledCount returns the filled count for a vertex sketch (for testing)
+func (sg *SketchGraph) GetFilledCount(nodeId int64) int64 {
+	sketch := sg.sketchManager.GetVertexSketch(nodeId)
+	if sketch != nil {
+		return sketch.filledCount
+	}
+	return 0
+}
+
+// GetCommunitySketches returns the community sketches (for testing)
+func (sg *SketchGraph) GetCommunitySketches() map[int]*VertexBottomKSketch {
+	communitySketches := make(map[int]*VertexBottomKSketch)
+	for commId, sketch := range sg.sketchManager.vertexSketches {
+		if sketch != nil {
+			communitySketches[int(commId)] = sketch
+		}
+	}
+	return communitySketches
+}
+
 func (sg *SketchGraph) PrintDebug() {
 	fmt.Println("=== SKETCH GRAPH DEBUG ===")
 	fmt.Printf("Nodes: %d\n", sg.NumNodes)
@@ -736,13 +823,13 @@ func (sg *SketchGraph) PrintDebug() {
 	
 	// Print node degrees
 	fmt.Println("\n--- NODE DEGREES ---")
-	for i := 0; i < sg.NumNodes && i < 12; i++ { // Show first 12 nodes
+	for i := 0; i < sg.NumNodes; i++ { // Show all nodes
 		degree := sg.GetDegree(i)
 		if degree > 0 {
 			fmt.Printf("Node %d: degree %.2f\n", i, degree)
 		}
 	}
 	
-	fmt.Println("=== END SKETCH GRAPH DEBUG ===\n")
+	fmt.Println("=== END SKETCH GRAPH DEBUG ===")
 }
 

@@ -10,6 +10,8 @@ import (
 	"time"
 	
 	"github.com/rs/zerolog"
+
+	"github.com/gilchrisn/graph-clustering-service/pkg2/utils"
 )
 
 // Result represents the algorithm output
@@ -161,16 +163,10 @@ func MoveNode(graph *Graph, comm *Community, node, oldComm, newComm int) {
 }
 
 // OneLevel performs one level of local optimization
-func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logger) (bool, int, error) {
+func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logger, moveTracker *utils.MoveTracker) (bool, int, error) {
 	improvement := false
 	totalMoves := 0
 	rng := rand.New(rand.NewSource(config.RandomSeed()))
-	
-	var moveTracker *MoveTracker
-    if config.EnableMoveTracking() {
-        moveTracker = NewMoveTracker(config.TrackingOutputFile(), "louvain")
-        defer moveTracker.Close()
-    }
 
 	// Create node processing order
 	nodes := make([]int, graph.NumNodes)
@@ -205,7 +201,7 @@ func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logg
 			}
 			
 			// Find best community
-			for targetComm, edgeWeight := range neighborComms {
+			for targetComm, edgeWeight := range neighborComms { 
 				if len(comm.CommunityNodes[targetComm]) == 0 {
 					continue
 				}
@@ -224,7 +220,7 @@ func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logg
 				improvement = true
 
                 if moveTracker != nil {
-                    moveTracker.LogMove(totalMoves, node, oldComm, bestComm, bestGain, 
+                    moveTracker.LogMove(totalMoves + iterationMoves, node, oldComm, bestComm, bestGain, 
                                       CalculateModularity(graph, comm))
                 }
 			}
@@ -336,6 +332,12 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 	startTime := time.Now()
 	logger := config.CreateLogger()
 	
+    var moveTracker *utils.MoveTracker
+    if config.EnableMoveTracking() {
+        moveTracker = utils.NewMoveTracker(config.TrackingOutputFile(), "louvain")
+        defer moveTracker.Close()
+    }
+
 	logger.Info().
 		Int("nodes", graph.NumNodes).
 		Float64("total_weight", graph.TotalWeight).
@@ -373,7 +375,7 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 			Msg("Starting level")
 		
 		// Phase 1: Local optimization
-		improvement, moves, err := OneLevel(currentGraph, comm, config, logger)
+		improvement, moves, err := OneLevel(currentGraph, comm, config, logger, moveTracker)
 		if err != nil {
 			return nil, fmt.Errorf("local optimization failed at level %d: %w", level, err)
 		}
