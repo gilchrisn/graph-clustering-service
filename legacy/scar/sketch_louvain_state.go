@@ -151,22 +151,13 @@ func (sls *SketchLouvainState) EstimateCardinality(nodeId int64) float64 {
 
 // Estimate community cardinality via delegation
 func (sls *SketchLouvainState) EstimateCommunityCardinality(commId int64) float64 {
-	communitySketch := sls.sketchManager.GetCommunitySketch(commId)
-	if communitySketch == nil {
-		return 0.0
+	degreeSum := 0.0
+	for _, nodeId := range sls.communityToNodes[commId] {
+		degreeSum += sls.EstimateCardinality(nodeId)
 	}
-	if communitySketch.IsSketchFull() {
-		return communitySketch.EstimateCardinality()
-	} else {
-		degreeSum := 0.0
-		for _, nodeId := range sls.communityToNodes[commId] {
-			degreeSum += sls.EstimateCardinality(nodeId)
-		}
-		return degreeSum
-	}
+	return degreeSum
 }
 
-// EstimateEdgesToCommunity estimates the edges to a community
 func (sls *SketchLouvainState) EstimateEdgesToCommunity(nodeId, commId int64) float64 {
 	// Get the sketch for the node
 	nodeSketch := sls.GetVertexSketch(nodeId)
@@ -181,30 +172,55 @@ func (sls *SketchLouvainState) EstimateEdgesToCommunity(nodeId, commId int64) fl
 	}
 
 	if !nodeSketch.IsSketchFull() {
-        // EXACT METHOD: Count edges directly via adjacency list
-        // Works perfectly for both leaf and super-node levels
-		edgeCount := 0.0
-		// use adjacency list to count edges
-		for _, edge := range sls.GetSketchNeighbors(nodeId) {
-			if sls.GetNodeCommunity(edge.neighbor) == commId {
-				edgeCount += edge.weight
+		return sls.countExactEdgesToCommunity(nodeId, commId)
+	} else if communitySketch.IsSketchFull() {
+		return sls.estimateEdgesViaInclusion(nodeSketch, communitySketch, commId)
+	} else {
+		return sls.countExactEdgesToCommunityHybrid(nodeId, commId)
+	}
+}
+
+
+func (sls *SketchLouvainState) countExactEdgesToCommunity(nodeId, commId int64) float64 {
+	edgeCount := 0.0
+	for _, edge := range sls.GetSketchNeighbors(nodeId) {
+		if sls.GetNodeCommunity(edge.neighbor) == commId {
+			edgeCount += edge.weight
+		}
+	}
+	return edgeCount
+}
+
+func (sls *SketchLouvainState) estimateEdgesViaInclusion(nodeSketch, communitySketch *VertexBottomKSketch, commId int64) float64 {
+	nodeDegree := nodeSketch.EstimateCardinality()
+	communityDegree := sls.EstimateCommunityCardinality(commId)
+	
+	unionSketch := nodeSketch.UnionWith(communitySketch)
+	if unionSketch == nil {
+		return 0.0
+	}
+	
+	unionDegree := unionSketch.EstimateCardinality()
+	intersectionSize := nodeDegree + communityDegree - unionDegree
+
+	return math.Max(0, intersectionSize)
+}
+
+func (sls *SketchLouvainState) countExactEdgesToCommunityHybrid(nodeId, commId int64) float64 {
+	edgeWeight := 0.0
+	
+	// Iterate through all members of the community
+	for _, memberNode := range sls.communityToNodes[commId] {
+		// Check adjacency list of this community member for edge to target node
+		for _, edge := range sls.GetSketchNeighbors(memberNode) {
+			if edge.neighbor == nodeId {
+				edgeWeight += edge.weight
+				break // Found the edge, no need to continue
 			}
 		}
-		return edgeCount
-	} else {
-        // SKETCH METHOD: Use inclusion-exclusion estimation
-        // For super-nodes: EstimateCardinality uses adjacency list → correct aggregated degrees
-        // For leaf nodes: EstimateCardinality uses sketch estimation → correct original degrees
-		nodeDegree := sls.EstimateCardinality(nodeId)
-		communityDegree := sls.EstimateCommunityCardinality(commId)
-		unionSketch := nodeSketch.UnionWith(communitySketch)
-		unionDegree := unionSketch.EstimateCardinality()
-
-		// Apply inclusion-exclusion
-		intersectionSize := nodeDegree + communityDegree - unionDegree
-
-		return math.Max(0, intersectionSize) // Ensure non-negative
 	}
+	
+	return edgeWeight
 }
 
 func (sls *SketchLouvainState) EstimateEdgesBetweenCommunities(nodeId, targetComm int64) float64 {

@@ -195,45 +195,46 @@ func (sc *SketchComputer) initializeFrontier(
 ) []bool {
 	frontier := make([]bool, n)
 	
+	// GLOBAL hash deduplication set
+	usedHashes := make(map[uint32]struct{})
+	// Reserve MaxUint32 as sentinel value
+	usedHashes[math.MaxUint32] = struct{}{}
+	
+	// Helper function to generate unique hash
+	generateUniqueHash := func() uint32 {
+		maxAttempts := 1000 // Prevent infinite loops
+		for attempts := 0; attempts < maxAttempts; attempts++ {
+			candidate := sc.rng.Uint32()
+			
+			// Check if hash is already used
+			if _, exists := usedHashes[candidate]; !exists {
+				usedHashes[candidate] = struct{}{}
+				return candidate
+			}
+		}
+		
+		// Fallback: linear search for unused value (should be extremely rare)
+		for candidate := uint32(0); candidate < math.MaxUint32; candidate++ {
+			if _, exists := usedHashes[candidate]; !exists {
+				usedHashes[candidate] = struct{}{}
+				return candidate
+			}
+		}
+		
+		// Should never reach here with reasonable graph sizes
+		panic("unable to generate unique hash - hash space exhausted")
+	}
 	
 	for i := int64(0); i < n; i++ {
 		if vertexProperties[i] == firstLabel {
 			for j := int64(0); j < nk; j++ {
-				uniformValue := sc.rng.Uint32()
-				// uniformValue := uint32(1000000 + i*1000 + j) // deterministic for testing
-				if uniformValue == math.MaxUint32 {
-					uniformValue--
-				}
-				sketches[j*n*k+i*k] = uniformValue
-				nodeHashValue[i*nk+j] = uniformValue + 1
+				uniqueHash := generateUniqueHash()
+				sketches[j*n*k+i*k] = uniqueHash
+				nodeHashValue[i*nk+j] = uniqueHash + 1
 				frontier[i] = true
 			}
 		}
 	}
-	
-	// // Print complete initial sketch state
-	// for i := int64(0); i < n; i++ {
-	// 	if frontier[i] {
-	// 		fmt.Printf("Node %d sketches: ", i)
-	// 		for j := int64(0); j < nk; j++ {
-	// 			fmt.Printf("layer%d=[", j)
-	// 			for ki := int64(0); ki < k; ki++ {
-	// 				val := sketches[j*n*k+i*k+ki]
-	// 				if val == math.MaxUint32 {
-	// 					fmt.Printf("MAX")
-	// 				} else {
-	// 					fmt.Printf("%d", val)
-	// 				}
-	// 				if ki < k-1 {
-	// 					fmt.Printf(",")
-	// 				}
-	// 			}
-	// 			fmt.Printf("] ")
-	// 		}
-	// 		fmt.Printf("\n")
-	// 	}
-	// }
-	// fmt.Println()
 	
 	return frontier
 }
