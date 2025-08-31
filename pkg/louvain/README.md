@@ -29,6 +29,9 @@ type Config struct {
     MaxIterations()      int     // max iterations per level (default: 100)  
     MinModularityGain()  float64 // min gain threshold (default: 1e-6)
     RandomSeed()         int64   // random seed
+    
+    // Graph storage
+    StoreGraphsAtEachLevel() bool // store Graph objects (default: false)
 }
 ```
 
@@ -45,66 +48,72 @@ type Result struct {
 
 type LevelInfo struct {
     Level          int             // hierarchy level
-    Communities    map[int][]int   // communityID -> [nodeIDs]
+    Communities    map[int][]int   // communityID -> [originalNodeIDs]
     Modularity     float64         // modularity at this level
     NumCommunities int            // number of communities
     NumMoves       int            // node moves in this level
     RuntimeMS      int64          // level runtime
+    
+    // Hierarchy tracking
+    CommunityToSuperNode map[int]int // community -> super-node mapping
+    SuperNodeToCommunity map[int]int // super-node -> community mapping
+    
+    // Graph storage (only if StoreGraphsAtEachLevel=true)
+    Graph *Graph `json:"-"` // graph structure at this level
 }
 ```
 
 ## Usage Example
 
 ```go
-// Create graph
+// Basic usage
 graph := NewGraph(numNodes)
 graph.AddEdge(0, 1, 1.0)
-graph.AddEdge(1, 2, 1.0)
-// ... add more edges
 
-// Configure algorithm  
 config := NewConfig()
 config.Set("algorithm.max_levels", 5)
-config.Set("algorithm.min_modularity_gain", 1e-5)
 
-// Run clustering
-ctx := context.Background()
 result, err := louvain.Run(graph, config, ctx)
 if err != nil {
     log.Fatal(err)
 }
 
-// Access results
 fmt.Printf("Final modularity: %.4f\n", result.Modularity)
-fmt.Printf("Number of communities: %d\n", len(result.FinalCommunities))
-
-// Get community for specific node
 community := result.FinalCommunities[nodeID]
-
-// Get hierarchy path for node
 path := result.GetHierarchyPath(nodeID)
+```
+
+### Graph Storage
+```go
+// Enable graph storage
+config.Set("output.store_graphs_at_each_level", true)
+
+result, err := louvain.Run(graph, config, ctx)
+
+// Access stored graphs
+for level, levelInfo := range result.Levels {
+    if levelInfo.Graph != nil {
+        degree := levelInfo.Graph.Degrees[node]
+        neighbors, weights := levelInfo.Graph.GetNeighbors(node)
+    }
+}
 ```
 
 ## Key Methods
 
-### Graph Construction
 ```go
+// Graph construction
 func NewGraph(numNodes int) *Graph
 func (g *Graph) AddEdge(u, v int, weight float64) error
-```
+func (g *Graph) GetNeighbors(node int) ([]int, []float64)
 
-### Configuration  
-```go
+// Configuration  
 func NewConfig() *Config
 func (c *Config) Set(key string, value interface{})
-func (c *Config) LoadFromFile(path string) error
-```
 
-### Result Analysis
-```go
+// Result analysis
 func (r *Result) GetHierarchyPath(nodeID int) []int
 func (r *Result) GetCommunityHierarchy(nodeID int) []int  
-func (r *Result) GetAllHierarchyPaths() map[int][]int
 ```
 
 ## Configuration Keys
@@ -115,5 +124,4 @@ func (r *Result) GetAllHierarchyPaths() map[int][]int
 | `algorithm.max_iterations` | int | 100 | Max iterations per level |
 | `algorithm.min_modularity_gain` | float64 | 1e-6 | Minimum gain threshold |
 | `algorithm.random_seed` | int64 | timestamp | Random seed |
-| `logging.level` | string | "info" | Log level |
-| `logging.enable_progress` | bool | true | Enable progress logs |
+| `output.store_graphs_at_each_level` | bool | false | Store Graph at each level |

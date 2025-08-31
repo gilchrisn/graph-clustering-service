@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 	
-	"github.com/gilchrisn/graph-clustering-service/pkg2/scar" // Adjust import path as needed
+	"github.com/gilchrisn/graph-clustering-service/pkg/scar" // Adjust import path as needed
 )
 
 func main() {
@@ -28,14 +28,14 @@ func main() {
 	
 	// Create configuration with LARGE K for exact computation
 	config := scar.NewConfig()
-	config.Set("algorithm.max_iterations", 50)
-	config.Set("algorithm.min_modularity_gain", 1e-6)
+	config.Set("algorithm.max_iterations", 5)
+	config.Set("algorithm.min_modularity_gain", -100.0)
 	config.Set("logging.level", "info")
 	config.Set("analysis.track_moves", true)
 	config.Set("analysis.output_file", "scar_moves.jsonl")
 	
 	// LARGE K ensures sketches are never full → exact computation (same as Louvain)
-	config.Set("scar.k", 512)    // Large K for exact computation
+	config.Set("scar.k", 2)    // Large K for exact computation
 	config.Set("scar.nk", 1)     // Multiple layers
 	config.Set("scar.threshold", 0.0)
 
@@ -79,6 +79,7 @@ func displayResults(result *scar.Result) {
 		// 	fmt.Printf("    Community %d: %v\n", commID, nodes)
 		// }
 	}
+	
 	
 	// // Print final community assignments
 	// fmt.Println("\nFinal community assignments:")

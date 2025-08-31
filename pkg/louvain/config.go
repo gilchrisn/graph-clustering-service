@@ -21,7 +21,7 @@ func NewConfig() *Config {
 	// Algorithm parameters
 	v.SetDefault("algorithm.max_levels", 10)
 	v.SetDefault("algorithm.max_iterations", 100)
-	v.SetDefault("algorithm.min_modularity_gain", 1e-6)
+	v.SetDefault("algorithm.min_modularity_gain", -100.0)
 	v.SetDefault("algorithm.resolution", 1.0)
 	v.SetDefault("algorithm.random_seed", time.Now().UnixNano())
 	
@@ -34,6 +34,8 @@ func NewConfig() *Config {
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.progress_interval_ms", 1000)
 	v.SetDefault("logging.enable_progress", true)
+
+	v.SetDefault("output.store_graphs_at_each_level", false)
 	
 	return &Config{v: v}
 }
@@ -61,6 +63,8 @@ func (c *Config) EnableProgress() bool { return c.v.GetBool("logging.enable_prog
 
 func (c *Config) EnableMoveTracking() bool { return c.v.GetBool("analysis.track_moves") }
 func (c *Config) TrackingOutputFile() string { return c.v.GetString("analysis.output_file") }
+
+func (c *Config) StoreGraphsAtEachLevel() bool { return c.v.GetBool("output.store_graphs_at_each_level") }
 
 // Set allows dynamic configuration changes
 func (c *Config) Set(key string, value interface{}) {

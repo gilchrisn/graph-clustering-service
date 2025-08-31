@@ -11,7 +11,7 @@ import (
 	
 	"github.com/rs/zerolog"
 
-	"github.com/gilchrisn/graph-clustering-service/pkg2/utils"
+	"github.com/gilchrisn/graph-clustering-service/pkg/utils"
 )
 
 // Result represents the algorithm output
@@ -34,6 +34,8 @@ type LevelInfo struct {
 	
 	CommunityToSuperNode map[int]int `json:"community_to_supernode,omitempty"` // community ID -> super-node ID at next level
 	SuperNodeToCommunity map[int]int `json:"supernode_to_community,omitempty"` // super-node ID -> community ID from this level
+
+	Graph       *Graph       `json:"-"` // For Louvain 
 
 }
 
@@ -115,7 +117,7 @@ func CalculateModularityGain(graph *Graph, comm *Community, node, targetComm int
 	nodeDegree := graph.Degrees[node]
 	commTotal := comm.CommunityWeights[targetComm]
 	m2 := 2.0 * graph.TotalWeight
-		
+	
 	return edgeWeight - (nodeDegree*commTotal)/m2
 }
 
@@ -188,7 +190,7 @@ func OneLevel(graph *Graph, comm *Community, config *Config, logger zerolog.Logg
 		for _, node := range nodes {
 			oldComm := comm.NodeToCommunity[node]
 			bestComm := oldComm
-			bestGain := 0.0
+			bestGain := -100.0
 			
 			// Find neighbor communities
 			neighborComms := make(map[int]float64)
@@ -345,10 +347,13 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
         defer moveTracker.Close()
     }
 
-	logger.Info().
-		Int("nodes", graph.NumNodes).
-		Float64("total_weight", graph.TotalWeight).
-		Msg("Starting Louvain algorithm")
+    storeGraphs := config.StoreGraphsAtEachLevel()
+
+    logger.Info().
+        Int("nodes", graph.NumNodes).
+        Float64("total_weight", graph.TotalWeight).
+        Bool("store_graphs", storeGraphs).  // Log the setting
+        Msg("Starting Louvain algorithm")
 	
 	// Validate input graph
 	if err := graph.Validate(); err != nil {
@@ -402,22 +407,24 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 			CommunityToSuperNode: make(map[int]int),
 			SuperNodeToCommunity: make(map[int]int),
 		}
-		
-		// Build communities map using ORIGINAL node IDs
+
+        if storeGraphs {
+            levelInfo.Graph = currentGraph.Clone()
+            logger.Debug().
+                Int("level", level).
+                Int("stored_nodes", levelInfo.Graph.NumNodes).
+                Float64("stored_weight", levelInfo.Graph.TotalWeight).
+                Msg("Stored level graph")
+        }
+
+		// Build communities map using CURRENT LEVEL node IDs
 		for c := 0; c < comm.NumCommunities; c++ {
 			if len(comm.CommunityNodes[c]) > 0 {
-				originalNodes := make([]int, 0)
-				
-				// For each super-node in this community, get original nodes
-				for _, superNode := range comm.CommunityNodes[c] {
-					originalNodes = append(originalNodes, nodeToOriginal[superNode]...)
-				}
-				
-				if len(originalNodes) > 0 {
-					levelInfo.Communities[c] = originalNodes
-				}
+				levelInfo.Communities[c] = make([]int, len(comm.CommunityNodes[c]))
+				copy(levelInfo.Communities[c], comm.CommunityNodes[c])
 			}
 		}
+
 		levelInfo.NumCommunities = len(levelInfo.Communities)
 		
 		result.Levels = append(result.Levels, levelInfo)
@@ -455,7 +462,7 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 		
 		// Build community-to-supernode mapping (only for communities that have nodes)
 		for commID := range result.Levels[currentLevelIndex].Communities {
-			if superNodeID, exists := commToSuper[commID]; exists {  // ✅ FIXED LINE
+			if superNodeID, exists := commToSuper[commID]; exists {  
 				result.Levels[currentLevelIndex].CommunityToSuperNode[commID] = superNodeID
 			}
 		}
@@ -508,6 +515,12 @@ func Run(graph *Graph, config *Config, ctx context.Context) (*Result, error) {
 		for _, originalNode := range nodeToOriginal[superNode] {
 			result.FinalCommunities[originalNode] = finalCommID
 		}
+	}
+	
+	if storeGraphs {
+		logger.Info().
+			Int("levels_stored", len(result.Levels)).
+			Msg("Graph storage completed")
 	}
 	
 	logger.Info().
@@ -621,3 +634,4 @@ func (r *Result) GetAllHierarchyPaths() map[int][]int {
 	
 	return paths
 }
+

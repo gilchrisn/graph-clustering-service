@@ -11,6 +11,7 @@ import (
 type SketchGraph struct {
 	NumNodes    int         `json:"num_nodes"`
 	TotalWeight float64     `json:"total_weight"`
+	degrees       []float64 
 	
 	// Sketch-based data structures
 	sketchManager   *SketchManager
@@ -27,6 +28,7 @@ type WeightedEdge struct {
 type SketchManager struct {
 	vertexSketches map[int64]*VertexBottomKSketch
 	hashToNodeMap  map[uint32]int64
+    nodeToHashMap  map[int64]*VertexBottomKSketch  
 	k              int64
 	nk             int64
 }
@@ -45,6 +47,7 @@ func NewSketchManager(k, nk int64) *SketchManager {
 	return &SketchManager{
 		vertexSketches: make(map[int64]*VertexBottomKSketch),
 		hashToNodeMap:  make(map[uint32]int64),
+        nodeToHashMap:  make(map[int64]*VertexBottomKSketch), 
 		k:              k,
 		nk:             nk,
 	}
@@ -59,6 +62,15 @@ func (sm *SketchManager) GetVertexSketch(nodeId int64) *VertexBottomKSketch {
 func (sm *SketchManager) GetNodeFromHash(hashValue uint32) (int64, bool) {
 	nodeId, exists := sm.hashToNodeMap[hashValue]
 	return nodeId, exists
+}
+
+// GetNodeToHashMap returns a map of node IDs to their identifying hash sketches
+func (sm *SketchManager) GetNodeToHashMap() map[int64]*VertexBottomKSketch {
+	nodeToHashMap := make(map[int64]*VertexBottomKSketch)
+	for nodeID, sketch := range sm.nodeToHashMap {
+		nodeToHashMap[nodeID] = sketch
+	}
+	return nodeToHashMap
 }
 
 // NewVertexBottomKSketch creates a new bottom-k sketch
@@ -162,31 +174,60 @@ func NewSketchGraph(numNodes int) *SketchGraph {
 	return &SketchGraph{
 		NumNodes:      numNodes,
 		TotalWeight:   0.0,
+		degrees:       make([]float64, numNodes),
 		sketchManager: NewSketchManager(10, 4), // Default k=10, nk=4
 		adjacencyList: make([][]WeightedEdge, numNodes),
 	}
 }
 
 // GetDegree returns the degree of a node (SKETCH-BASED implementation of graph.Degrees[])
+// func (sg *SketchGraph) GetDegree(node int) float64 {
+// 	if node < 0 || node >= sg.NumNodes {
+// 		return 0.0
+// 	}
+	
+// 	sketch := sg.sketchManager.GetVertexSketch(int64(node))
+// 	if sketch != nil && sketch.IsSketchFull() {
+// 		return sketch.EstimateCardinality() // Sketch estimation
+// 	} else {
+// 		// Exact calculation from adjacency list
+// 		degree := 0.0
+// 		for _, edge := range sg.adjacencyList[node] {
+// 			if edge.Neighbor == node {
+// 				degree += edge.Weight * 2 // Self-loop counts double
+// 			} else {
+// 				degree += edge.Weight
+// 			}
+// 		}
+// 		return degree
+// 	}
+// }
+
 func (sg *SketchGraph) GetDegree(node int) float64 {
 	if node < 0 || node >= sg.NumNodes {
 		return 0.0
 	}
-	
-	sketch := sg.sketchManager.GetVertexSketch(int64(node))
-	if sketch != nil && sketch.IsSketchFull() {
-		return sketch.EstimateCardinality() // Sketch estimation
-	} else {
-		// Exact calculation from adjacency list
-		degree := 0.0
-		for _, edge := range sg.adjacencyList[node] {
-			if edge.Neighbor == node {
-				degree += edge.Weight * 2 // Self-loop counts double
-			} else {
-				degree += edge.Weight
+	return sg.degrees[node]
+}
+
+func (sg *SketchGraph) CalculateAndStoreDegrees() {
+	for node := 0; node < sg.NumNodes; node++ {
+		sketch := sg.sketchManager.GetVertexSketch(int64(node))
+		if sketch != nil && sketch.IsSketchFull() {
+			// Use sketch estimation
+			sg.degrees[node] = sketch.EstimateCardinality()
+		} else {
+			// Use exact calculation from adjacency list
+			degree := 0.0
+			for _, edge := range sg.adjacencyList[node] {
+				if edge.Neighbor == node {
+					degree += edge.Weight * 2 // Self-loop counts double
+				} else {
+					degree += edge.Weight
+				}
 			}
+			sg.degrees[node] = degree
 		}
-		return degree
 	}
 }
 
@@ -395,6 +436,8 @@ func (sg *SketchGraph) AggregateFromPreviousLevel(prevGraph *SketchGraph, commTo
 		}
 		
 		sg.sketchManager.vertexSketches[int64(superNodeId)] = superSketch
+
+		sg.degrees[superNodeId] = comm.CommunityWeights[commId]	
 	}
 	
 	// Step 2: Build hash-to-node mapping for super-nodes
@@ -404,6 +447,12 @@ func (sg *SketchGraph) AggregateFromPreviousLevel(prevGraph *SketchGraph, commTo
 			sg.sketchManager.hashToNodeMap[hash] = int64(superNodeId)
 		}
 	}
+
+    for commId, superNodeId := range commToSuper {
+        if communitySketch := comm.communitySketches[commId]; communitySketch != nil {
+            sg.sketchManager.nodeToHashMap[int64(superNodeId)] = communitySketch
+        }
+    }
 	
 	// Step 3: Build adjacency for super-nodes (exact method aggregation)
 	totalWeight := 0.0
@@ -415,34 +464,38 @@ func (sg *SketchGraph) AggregateFromPreviousLevel(prevGraph *SketchGraph, commTo
 	
 	for node := 0; node < prevGraph.NumNodes; node++ {
 		if _, exists := commToSuper[comm.NodeToCommunity[node]]; exists {
-			totalWeight += prevGraph.GetDegree(node)
+			totalWeight += prevGraph.degrees[node]
 		}
 	}
 
-	// Step 3a: Separate communities by sketch fullness
-	nonFullCommunities := make([]int, 0)
-	
-	for commId := range commToSuper {
+	// Step 3a: Create reverse mapping and separate super-nodes by sketch fullness
+	superToComm := make(map[int]int)
+	nonFullSuperNodes := make([]int, 0)
+
+	for commId, superNodeId := range commToSuper {
+		superToComm[superNodeId] = commId // Create reverse mapping
+		
 		memberNodes := comm.CommunityNodes[commId]
 		if len(memberNodes) == 0 {
 			continue
 		}
 		
-		// Check if COMMUNITY sketch is full
-		communitySketch := comm.communitySketches[commId]
-		if communitySketch == nil || !communitySketch.IsSketchFull() {
-			nonFullCommunities = append(nonFullCommunities, commId)
+		// Check if SUPER-NODE sketch is full
+		superNodeSketch := sg.sketchManager.GetVertexSketch(int64(superNodeId))
+		if superNodeSketch == nil || !superNodeSketch.IsSketchFull() {
+			nonFullSuperNodes = append(nonFullSuperNodes, superNodeId)
 		}
-		// Note: Full communities are skipped for adjacency building
+		// Note: Full super-nodes are skipped for adjacency building
 	}
-	
-	// Step 3b: Only process nodes from non-full communities
-	for _, communityId := range nonFullCommunities {
+
+	// Step 3b: Only process nodes from non-full super-nodes
+	for _, superNodeId := range nonFullSuperNodes {
+		communityId := superToComm[superNodeId]
 		memberNodes := comm.CommunityNodes[communityId]
-		currentSupernode := commToSuper[communityId]
+		currentSupernode := superNodeId
 		
 		for _, nodeId := range memberNodes {
-			// Get neighbors using exact adjacency (since community sketch not full)
+			// Get neighbors using exact adjacency (since super-node sketch not full)
 			neighbors, weights := prevGraph.GetNeighbors(nodeId)
 			for i, neighbor := range neighbors {
 				neighborComm := comm.NodeToCommunity[neighbor]
@@ -466,6 +519,7 @@ func (sg *SketchGraph) AggregateFromPreviousLevel(prevGraph *SketchGraph, commTo
 			}
 		}
 	}
+
 	
 	// Step 4: Convert to adjacency list format (NO division by 2.0)
 	for superNodeA, neighbors := range adjacency {
@@ -481,7 +535,7 @@ func (sg *SketchGraph) AggregateFromPreviousLevel(prevGraph *SketchGraph, commTo
 	return nil
 }
 
-// EstimateEdgesToCommunity - CORE SCAR METHOD (hybrid exact/probabilistic)
+// EstimateEdgesToCommunity 
 func (sg *SketchGraph) EstimateEdgesToCommunity(node, commId int, comm *Community) float64 {
 	if node < 0 || node >= sg.NumNodes || commId < 0 {
 		return 0.0
@@ -491,18 +545,21 @@ func (sg *SketchGraph) EstimateEdgesToCommunity(node, commId int, comm *Communit
 	if nodeSketch == nil {
 		return 0.0
 	}
+
 	
 	communitySketch := comm.communitySketches[commId]
 	if communitySketch == nil {
 		return 0.0
 	}
+
+	if nodeSketch.IsSketchFull() && comm.NodeToCommunity[node] == commId && len(comm.CommunityNodes[commId]) == 1 && len(comm.communitySketches) == 1 {
+		return 0.0
+	}
 	
 	if !nodeSketch.IsSketchFull() {
 		return sg.countExactEdgesToCommunity(node, commId, comm)
-	} else if communitySketch.IsSketchFull() {
-		return sg.estimateEdgesViaInclusion(nodeSketch, communitySketch, commId, comm)
 	} else {
-		return sg.countExactEdgesToCommunityHybrid(node, commId, comm)
+		return sg.estimateEdgesViaInclusion(nodeSketch, communitySketch, commId, comm)
 	}
 }
 
@@ -522,57 +579,31 @@ func (sg *SketchGraph) countExactEdgesToCommunity(node, commId int, comm *Commun
 
 // estimateEdgesViaInclusion uses inclusion-exclusion principle
 func (sg *SketchGraph) estimateEdgesViaInclusion(nodeSketch, communitySketch *VertexBottomKSketch, commId int, comm *Community) float64 {
-	nodeDegree := nodeSketch.EstimateCardinality()
-	communityDegree := sg.EstimateCommunityCardinality(commId, comm)
-	
-	unionSketch := nodeSketch.UnionWith(communitySketch)
-	if unionSketch == nil {
-		return 0.0 // Sketch dimensions incompatible
-	}
-	
-	unionDegree := unionSketch.EstimateCardinality()
-	intersectionSize := nodeDegree + communityDegree - unionDegree
+    nodeDegree := nodeSketch.EstimateCardinality()
+    communitySize := float64(len(comm.CommunityNodes[commId])) 
+    
+    unionSketch := nodeSketch.UnionWith(communitySketch)
+    if unionSketch == nil {
+        return 0.0
+    }
+    
+    unionDegree := unionSketch.EstimateCardinality()
+    edges := nodeDegree + communitySize - unionDegree
 
-	return math.Max(0, intersectionSize)
+    return math.Max(0, edges)
 }
 
-// countExactEdgesToCommunityHybrid - hybrid method when node sketch is full but community sketch is not full
-func (sg *SketchGraph) countExactEdgesToCommunityHybrid(node, commId int, comm *Community) float64 {
-	edgeWeight := 0.0
-	
-	// Iterate through all members of the community
-	// Since community sketch is not full, member node sketches are also not full
-	// So we can use adjacency list to get exact edge weights
-	for _, memberNode := range comm.CommunityNodes[commId] {
-		if memberNode >= len(sg.adjacencyList) {
-			continue
-		}
-		
-		// Check adjacency list of this community member for edge to target node
-		for _, edge := range sg.adjacencyList[memberNode] {
-			if edge.Neighbor == node {
-				edgeWeight += edge.Weight
-				break // Found the edge, no need to continue
-			}
-		}
-	}
-	
-	return edgeWeight
-}
-
-// FindNeighboringCommunities - CORE SCAR METHOD (all vs neighbors based on sketch fullness)
+// FindNeighboringCommunities finds all communities neighboring a given node
 func (sg *SketchGraph) FindNeighboringCommunities(node int, comm *Community) map[int]float64 {
 	neighborComms := make(map[int]float64)
 	
 	nodeSketch := sg.sketchManager.GetVertexSketch(int64(node))
 	if nodeSketch != nil && nodeSketch.IsSketchFull() {
-		// SKETCH METHOD: Check ALL communities (key SCAR insight!)
 		for commId := 0; commId < comm.NumCommunities; commId++ {
 			if len(comm.CommunityNodes[commId]) > 0 {
 				edgeWeight := sg.EstimateEdgesToCommunity(node, commId, comm)
-				if edgeWeight > 0 {
-					neighborComms[commId] = edgeWeight
-				}
+				neighborComms[commId] = edgeWeight
+				
 			}
 		}
 	} else {
@@ -592,26 +623,6 @@ func (sg *SketchGraph) FindNeighboringCommunities(node int, comm *Community) map
 	return neighborComms
 }
 
-// ======================== 2 VERSIONS OF ESTIMATEING COMMUNITY CARDINALITY ========================
-// // EstimateCommunityCardinality estimates the cardinality of a community
-// func (sg *SketchGraph) EstimateCommunityCardinality(commId int, comm *Community) float64 {
-// 	communitySketch := comm.communitySketches[commId]
-// 	if communitySketch == nil {
-// 		return 0.0
-// 	}
-	
-// 	if communitySketch.IsSketchFull() {
-// 		return communitySketch.EstimateCardinality()
-// 	} else {
-// 		// Sum individual node degrees
-// 		degreeSum := 0.0
-// 		for _, nodeId := range comm.CommunityNodes[commId] {
-// 			degreeSum += sg.GetDegree(nodeId)
-// 		}
-// 		return degreeSum
-// 	}
-// }
-
 // EstimateCommunityCardinality estimates the cardinality of a community
 func (sg *SketchGraph) EstimateCommunityCardinality(commId int, comm *Community) float64 {
 	communitySketch := comm.communitySketches[commId]
@@ -621,40 +632,76 @@ func (sg *SketchGraph) EstimateCommunityCardinality(commId int, comm *Community)
 
 	degreeSum := 0.0
 	for _, nodeId := range comm.CommunityNodes[commId] {
-		degreeSum += sg.GetDegree(nodeId)
+		degreeSum += sg.degrees[nodeId]
 	}
 	return degreeSum
 }
 // ================================================================================================
+// Add a node's identifying hash sketch to a community sketch
+func (sg *SketchGraph) addNodeHashToCommunitySketch(nodeId, commId int, comm *Community) {
+    nodeHashSketch := sg.sketchManager.nodeToHashMap[int64(nodeId)]
+    if nodeHashSketch == nil {
+        return
+    }
+    
+    communitySketch := comm.communitySketches[commId]
+    if communitySketch == nil {
+        // No existing community sketch, just reference the node's hash sketch
+        comm.communitySketches[commId] = nodeHashSketch
+        return
+    }
+    
+    // Union node's hash sketch into existing community sketch
+    for layer := int64(0); layer < communitySketch.nk; layer++ {
+        communitySketch.UnionWithLayer(layer, nodeHashSketch.GetSketch(layer))
+    }
+    communitySketch.UpdateFilledCount()
+}
 
-// UpdateCommunitySketch updates the sketch for a community (union of member sketches)
-func (sg *SketchGraph) UpdateCommunitySketch(commId int, memberNodes []int, comm *Community) {
-	if len(memberNodes) == 0 {
-		delete(comm.communitySketches, commId)
-		return
-	}
-	
-	// Start with first member's sketch
-	firstNode := memberNodes[0]
-	firstSketch := sg.sketchManager.GetVertexSketch(int64(firstNode))
-	if firstSketch == nil {
-		return
-	}
-	
-	// Create community sketch as union of all member sketches
-	communitySketch := NewVertexBottomKSketch(int64(commId), firstSketch.k, firstSketch.nk)
-	
-	// Union all member node sketches
-	for _, nodeId := range memberNodes {
-		nodeSketch := sg.sketchManager.GetVertexSketch(int64(nodeId))
-		if nodeSketch != nil {
-			for layer := int64(0); layer < nodeSketch.nk; layer++ {
-				communitySketch.UnionWithLayer(layer, nodeSketch.GetSketch(layer))
-			}
-		}
-	}
-	
-	comm.communitySketches[commId] = communitySketch
+// Remove a node's identifying hash sketch from a community sketch
+func (sg *SketchGraph) removeNodeHashFromCommunitySketch(nodeId, commId int, comm *Community) {
+    nodeHashSketch := sg.sketchManager.nodeToHashMap[int64(nodeId)]
+    if nodeHashSketch == nil {
+        return
+    }
+    
+    communitySketch := comm.communitySketches[commId]
+    if communitySketch == nil {
+        return
+    }
+    
+    // Remove node's hashes from each layer
+    for layer := int64(0); layer < communitySketch.nk; layer++ {
+        nodeLayerHashes := nodeHashSketch.GetSketch(layer)
+        communityLayer := communitySketch.sketches[layer]
+        
+        // Remove each hash from this layer
+        for _, hashToRemove := range nodeLayerHashes {
+            if hashToRemove == math.MaxUint32 {
+                break
+            }
+            sg.removeHashFromSortedArray(communityLayer, hashToRemove)
+        }
+    }
+    
+    communitySketch.UpdateFilledCount()
+}
+
+// Helper function to remove specific hash from sorted array
+func (sg *SketchGraph) removeHashFromSortedArray(sortedArray []uint32, hashToRemove uint32) {
+    for i := 0; i < len(sortedArray); i++ {
+        if sortedArray[i] == hashToRemove {
+            // Shift elements left
+            for j := i; j < len(sortedArray)-1; j++ {
+                sortedArray[j] = sortedArray[j+1]
+            }
+            sortedArray[len(sortedArray)-1] = math.MaxUint32
+            break
+        }
+        if sortedArray[i] == math.MaxUint32 {
+            break // Hash not found
+        }
+    }
 }
 
 // addAdjacencyEdge adds an edge to the adjacency list (helper function)
@@ -703,11 +750,13 @@ func (sg *SketchGraph) buildAdjacencyList(rawGraph *RawGraph, nodeMapping *NodeM
 			}
 		}
 	}
+
+	sg.CalculateAndStoreDegrees()
 	
-	// Calculate total weight using compressed graph
+	// Calculate total weight using stored degrees
 	totalWeight := 0.0
 	for i := 0; i < sg.NumNodes; i++ {
-		totalWeight += sg.GetDegree(i)
+		totalWeight += sg.degrees[i]
 	}
 	sg.TotalWeight = totalWeight / 2.0 // Undirected graph
 }
@@ -721,6 +770,85 @@ func (sg *SketchGraph) buildAdjacencyList(rawGraph *RawGraph, nodeMapping *NodeM
 
 
 // ============================ DEBUGGING ============================
+
+
+// GetNeighborsInclusionExclusion returns ALL nodes as neighbors with inclusion-exclusion weights
+func (sg *SketchGraph) GetNeighborsInclusionExclusion(node int, threshold float64) ([]int, []float64) {
+    if node < 0 || node >= sg.NumNodes {
+        return nil, nil
+    }
+    
+    nodeSketch := sg.sketchManager.GetVertexSketch(int64(node))
+    if nodeSketch == nil || !nodeSketch.IsSketchFull() {
+        // Fall back to exact method for non-full sketches
+        return sg.getExactNeighbors(node)
+    }
+    
+    // Create weighted clique: estimate edge weight to ALL other nodes
+    neighbors := make([]int, 0, sg.NumNodes-1)
+    weights := make([]float64, 0, sg.NumNodes-1)
+    
+    for otherNode := 0; otherNode < sg.NumNodes; otherNode++ {
+        if otherNode == node {
+            continue // Skip self
+        }
+        
+        otherSketch := sg.sketchManager.GetVertexSketch(int64(otherNode))
+        if otherSketch == nil {
+            continue
+        }
+        
+        // Estimate edge weight using inclusion-exclusion
+        weight := sg.estimateEdgeWeightInclusionExclusion(nodeSketch, otherSketch)
+        
+        // Only include if weight is above threshold
+        if weight > threshold {
+            neighbors = append(neighbors, otherNode)
+            weights = append(weights, weight)
+        }
+    }
+    
+    return neighbors, weights
+}
+
+
+// estimateEdgeWeightInclusionExclusion estimates edge weight between two nodes using sketches
+func (sg *SketchGraph) estimateEdgeWeightInclusionExclusion(sketchA, sketchB *VertexBottomKSketch) float64 {
+    if sketchA == nil || sketchB == nil {
+        return 0.0
+    }
+    
+    // Get individual cardinalities
+    cardinalityA := sketchA.EstimateCardinality()
+    cardinalityB := sketchB.EstimateCardinality()
+    
+    // Compute union
+    unionSketch := sketchA.UnionWith(sketchB)
+    if unionSketch == nil {
+        return 0.0
+    }
+    
+    unionCardinality := unionSketch.EstimateCardinality()
+    
+    // Inclusion-exclusion: |A ∩ B| = |A| + |B| - |A ∪ B|
+    intersection := cardinalityA + cardinalityB - unionCardinality
+    
+    // Return non-negative intersection as edge weight
+    return math.Max(0, intersection)
+}
+
+// getExactNeighbors falls back to adjacency list for non-full sketches
+func (sg *SketchGraph) getExactNeighbors(node int) ([]int, []float64) {
+    neighbors := make([]int, len(sg.adjacencyList[node]))
+    weights := make([]float64, len(sg.adjacencyList[node]))
+    
+    for i, edge := range sg.adjacencyList[node] {
+        neighbors[i] = edge.Neighbor
+        weights[i] = edge.Weight
+    }
+    
+    return neighbors, weights
+}
 
 // SetSketchManager sets the sketch manager
 func (sg *SketchGraph) SetSketchManager(sm *SketchManager) {
@@ -742,6 +870,11 @@ func (sm *SketchManager) SetVertexSketch(nodeId int64, sketch *VertexBottomKSket
 // SetHashToNode sets a hash-to-node mapping
 func (sm *SketchManager) SetHashToNode(hash uint32, nodeId int64) {
 	sm.hashToNodeMap[hash] = nodeId
+}
+
+// SetNodeToHashMap sets a node-to-hash mapping
+func (sm *SketchManager) SetNodeToHashMap(nodeId int64, sketch *VertexBottomKSketch) {
+	sm.nodeToHashMap[nodeId] = sketch
 }
 
 // SetTotalWeight sets the total weight of the sketch graph
@@ -862,7 +995,7 @@ func (sg *SketchGraph) PrintDebug() {
 	// Print node degrees
 	fmt.Println("\n--- NODE DEGREES ---")
 	for i := 0; i < sg.NumNodes; i++ { // Show all nodes
-		degree := sg.GetDegree(i)
+		degree := sg.degrees[i]
 		if degree > 0 {
 			fmt.Printf("Node %d: degree %.2f\n", i, degree)
 		}

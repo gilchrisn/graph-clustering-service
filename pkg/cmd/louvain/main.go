@@ -9,7 +9,7 @@ import (
 	"strconv"
 	
 	"github.com/gilchrisn/graph-clustering-service/pkg/materialization"
-	"github.com/gilchrisn/graph-clustering-service/pkg2/louvain" // Adjust import path as needed
+	"github.com/gilchrisn/graph-clustering-service/pkg/louvain" // Adjust import path as needed
 )
 
 func main() {
@@ -61,7 +61,7 @@ func main() {
 	fmt.Println("\nStep 4: Running Louvain clustering...")
 	louvainConfig := louvain.NewConfig()
 	louvainConfig.Set("algorithm.max_iterations", 5)
-	louvainConfig.Set("algorithm.min_modularity_gain", 1e-6)
+	louvainConfig.Set("algorithm.min_modularity_gain", -100.0)
 	louvainConfig.Set("logging.level", "info")
 	louvainConfig.Set("algorithm.random_seed", int64(42))
 	

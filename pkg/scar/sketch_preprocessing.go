@@ -9,7 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
+	// "time"
 	
 	"github.com/rs/zerolog"
 )
@@ -210,8 +210,8 @@ func computeSketches(rawGraph *RawGraph, properties []uint32, path []uint32, pat
 	usedHashes[math.MaxUint32] = struct{}{}
 	
 	// Initialize frontier with nodes having the first label
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	// rng := rand.New(rand.NewSource(config.RandomSeed() + 1))
+	// rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng := rand.New(rand.NewSource(config.RandomSeed() + 1))
 	firstLabel := path[0]
 	
 	// Helper function to generate unique hash
@@ -423,14 +423,25 @@ func buildSketchGraphFromSketches(rawGraph *RawGraph, sketches []uint32, nodeHas
 				sketchGraph.sketchManager.vertexSketches[int64(compressedId)] = sketch
 			}
 			
-			// Build hash-to-node mapping from node seeds (what others will see)
-			// Map hashes to compressed IDs
-			for j := int64(0); j < nk; j++ {
-				hashValue := nodeHashValues[int64(originalId)*nk+j]
+			// Create identifying hash sketch for this node  
+			identifyingHashSketch := NewVertexBottomKSketch(int64(compressedId), finalK, nk)
+
+			// Fill with this node's identifying hashes (one per layer)
+			for layer := int64(0); layer < nk; layer++ {
+				hashValue := nodeHashValues[int64(originalId)*nk+layer]
 				if hashValue != 0 {
+					identifyingHashSketch.sketches[layer][0] = hashValue  // One hash per layer
+					// Rest of layer is empty (MaxUint32)
+					for i := int64(1); i < finalK; i++ {
+						identifyingHashSketch.sketches[layer][i] = math.MaxUint32
+					}
+					
+					// Build hashToNodeMap (all nk hashes point to same node)
 					sketchGraph.sketchManager.hashToNodeMap[hashValue] = int64(compressedId)
 				}
 			}
+
+		 	sketchGraph.sketchManager.nodeToHashMap[int64(compressedId)] = identifyingHashSketch
 		}
 	}
 	

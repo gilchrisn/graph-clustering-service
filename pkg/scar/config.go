@@ -22,7 +22,7 @@ func NewConfig() *Config {
 	// Algorithm parameters (IDENTICAL to Louvain)
 	v.SetDefault("algorithm.max_levels", 10)
 	v.SetDefault("algorithm.max_iterations", 100)
-	v.SetDefault("algorithm.min_modularity_gain", 1e-6)
+	v.SetDefault("algorithm.min_modularity_gain", -100)
 	v.SetDefault("algorithm.resolution", 1.0)
 	v.SetDefault("algorithm.random_seed", time.Now().UnixNano())
 	
@@ -40,6 +40,8 @@ func NewConfig() *Config {
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.progress_interval_ms", 1000)
 	v.SetDefault("logging.enable_progress", true)
+
+	v.SetDefault("output.store_graphs_at_each_level", false)
 	
 	return &Config{v: v}
 }
@@ -70,8 +72,10 @@ func (c *Config) K() int64 { return c.v.GetInt64("scar.k") }
 func (c *Config) NK() int64 { return c.v.GetInt64("scar.nk") }
 func (c *Config) Threshold() float64 { return c.v.GetFloat64("scar.threshold") }
 
-func (c *Config) EnableMoveTracking() bool { return c.v.GetBool("analysis.track_moves") }
-func (c *Config) TrackingOutputFile() string { return c.v.GetString("analysis.output_file") }
+func (c *Config) TrackMoves() bool { return c.v.GetBool("analysis.track_moves") }
+func (c *Config) OutputFile() string { return c.v.GetString("analysis.output_file") }
+
+func (c *Config) StoreGraphsAtEachLevel() bool { return c.v.GetBool("output.store_graphs_at_each_level") }
 
 // Set allows dynamic configuration changes (IDENTICAL to Louvain)
 func (c *Config) Set(key string, value interface{}) {

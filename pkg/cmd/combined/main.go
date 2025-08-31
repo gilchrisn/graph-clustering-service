@@ -12,8 +12,8 @@ import (
 	// "time"
 	
 	"github.com/gilchrisn/graph-clustering-service/pkg/materialization"
-	"github.com/gilchrisn/graph-clustering-service/pkg2/louvain"
-	"github.com/gilchrisn/graph-clustering-service/pkg2/scar"
+	"github.com/gilchrisn/graph-clustering-service/pkg/louvain"
+	"github.com/gilchrisn/graph-clustering-service/pkg/scar"
 )
 
 type ComparisonResult struct {
@@ -119,7 +119,7 @@ func runMaterializationLouvainPipeline(graphFile, propertiesFile, pathFile strin
 	fmt.Println("\nStep 4: Running Louvain clustering...")
 	louvainConfig := louvain.NewConfig()
 	louvainConfig.Set("algorithm.max_iterations", 5)
-	louvainConfig.Set("algorithm.min_modularity_gain", 1e-6)
+	louvainConfig.Set("algorithm.min_modularity_gain", -100.0)
 	louvainConfig.Set("logging.level", "info")
 	louvainConfig.Set("algorithm.random_seed", int64(42))
 	
@@ -141,11 +141,11 @@ func runSCARPipeline(graphFile, propertiesFile, pathFile string) *scar.Result {
 	// Create configuration with LARGE K for exact computation
 	config := scar.NewConfig()
 	config.Set("algorithm.max_iterations", 5)
-	config.Set("algorithm.min_modularity_gain", 1e-6)
+	config.Set("algorithm.min_modularity_gain", -100.0)
 	config.Set("logging.level", "info")
 	
 	// LARGE K ensures sketches are never full → exact computation (same as Louvain)
-	config.Set("scar.k", 800)    // Large K for exact computation
+	config.Set("scar.k", 700)    // Large K for exact computation
 	config.Set("scar.nk", 1)     // Multiple layers
 	config.Set("scar.threshold", 0.0)
 	config.Set("algorithm.random_seed", int64(42)) 

@@ -3,6 +3,8 @@ package scar
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sort"
 	// "math"
 	"math/rand"
 	"runtime"
@@ -10,7 +12,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/gilchrisn/graph-clustering-service/pkg2/utils"
+	"github.com/gilchrisn/graph-clustering-service/pkg/utils"
 )
 
 // Result represents the algorithm output
@@ -35,6 +37,8 @@ type LevelInfo struct {
 
 	CommunityToSuperNode map[int]int `json:"community_to_supernode,omitempty"` // community ID -> super-node ID at next level
 	SuperNodeToCommunity map[int]int `json:"supernode_to_community,omitempty"` // super-node ID -> community ID from this level
+
+	SketchGraph *SketchGraph `json:"-"`
 }
 
 // Statistics contains algorithm performance metrics 
@@ -79,7 +83,6 @@ func NewCommunity(graph *SketchGraph) *Community {
 		NumCommunities:          n,
 		communitySketches:        make(map[int]*VertexBottomKSketch),
 	}
-	
 	// Initialize each node in its own community
 	for i := 0; i < n; i++ {
 		comm.NodeToCommunity[i] = i
@@ -87,8 +90,7 @@ func NewCommunity(graph *SketchGraph) *Community {
 		comm.CommunityWeights[i] = graph.GetDegree(i)                    
 		comm.CommunityInternalWeights[i] = graph.GetEdgeWeight(i, i) * 2 // self-loops count double
 		
-		// Initialize community sketch (copy of node sketch)
-		graph.UpdateCommunitySketch(i, []int{i}, comm)
+		comm.communitySketches[i] = graph.sketchManager.nodeToHashMap[int64(i)]
 	}
 	
 	return comm
@@ -125,7 +127,10 @@ func CalculateModularityGain(graph *SketchGraph, comm *Community, node, targetCo
 
 
 	// gain := edgeWeight - (nodeDegree*commTotal)/m2
-	// fmt.Printf("Calculating modularity gain for node %d to community %d: edgeWeight=%.6f, nodeDegree=%.6f, commTotal=%.6f, m2=%.6f, gain=%.6f\n", node, targetComm, edgeWeight, nodeDegree, commTotal, m2, gain)
+	// if (true) {
+	// 	fmt.Printf("Calculating modularity gain for node %d to community %d: edgeWeight=%.6f, nodeDegree=%.6f, commTotal=%.6f, m2=%.6f, gain=%.6f\n", node, targetComm, edgeWeight, nodeDegree, commTotal, m2, gain)
+
+	// }
 
 	return edgeWeight - (nodeDegree*commTotal)/m2
 }
@@ -152,21 +157,16 @@ func MoveNode(graph *SketchGraph, comm *Community, node, oldComm, newComm int) {
 		}
 	}
 
-	wasFull := comm.communitySketches[oldComm] != nil && comm.communitySketches[oldComm].IsSketchFull()
-
 	// Update old community sketch
 	if len(comm.CommunityNodes[oldComm]) > 0 {
-		graph.UpdateCommunitySketch(oldComm, comm.CommunityNodes[oldComm], comm)
+		graph.removeNodeHashFromCommunitySketch(node, oldComm, comm)
 	} else {
 		delete(comm.communitySketches, oldComm)
 	}
 	
 	// Update old community weights
-	if comm.communitySketches[oldComm] != nil && (comm.communitySketches[oldComm].IsSketchFull() || wasFull) {
-		comm.CommunityWeights[oldComm] = graph.EstimateCommunityCardinality(oldComm, comm)
-	} else {
-		comm.CommunityWeights[oldComm] -= nodeDegree	
-	}
+	comm.CommunityWeights[oldComm] -= nodeDegree	
+
 	oldWeight := GetEdgeWeightToComm(graph, comm, node, oldComm)
 	comm.CommunityInternalWeights[oldComm] -= 2 * oldWeight
 	
@@ -175,14 +175,11 @@ func MoveNode(graph *SketchGraph, comm *Community, node, oldComm, newComm int) {
 	comm.NodeToCommunity[node] = newComm
 	
 	// Update new community sketch
-	graph.UpdateCommunitySketch(newComm, comm.CommunityNodes[newComm], comm)
+	graph.addNodeHashToCommunitySketch(node, newComm, comm)
 
 	// Update new community weights
-	if comm.communitySketches[newComm] != nil && comm.communitySketches[newComm].IsSketchFull() {
-		comm.CommunityWeights[newComm] = graph.EstimateCommunityCardinality(newComm, comm)
-	} else {
-		comm.CommunityWeights[newComm] += nodeDegree
-	}
+	comm.CommunityWeights[newComm] += nodeDegree
+
 	newWeight := GetEdgeWeightToComm(graph, comm, node, newComm)
 	selfLoop := graph.GetEdgeWeight(node, node)           
 	comm.CommunityInternalWeights[newComm] += 2 * (newWeight + selfLoop)
@@ -210,10 +207,11 @@ func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolo
 		for _, node := range nodes {
 			oldComm := comm.NodeToCommunity[node]
 			bestComm := oldComm
-			bestGain := 0.0 // Start with zero
+			bestGain := -100.0 // Start with zero
 
 			// Find neighbor communities (SKETCH-BASED)
 			neighborComms := graph.FindNeighboringCommunities(node, comm)
+			
 			
 			// Find best community
 			for targetComm, edgeWeight := range neighborComms {
@@ -221,7 +219,7 @@ func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolo
 				if len(comm.CommunityNodes[targetComm]) == 0 {
 					continue
 				}
-				
+
 				gain := CalculateModularityGain(graph, comm, node, targetComm, edgeWeight)
 				if gain > bestGain || (gain == bestGain && targetComm < bestComm) { // tiebreaking by community ID
 					bestComm = targetComm
@@ -265,7 +263,7 @@ func OneLevel(graph *SketchGraph, comm *Community, config *Config, logger zerolo
 
 // AggregateGraph creates a super-graph from communities (MODIFIED for sketches)
 func AggregateGraph(graph *SketchGraph, comm *Community, logger zerolog.Logger) (*SketchGraph, [][]int, map[int]int, map[int]int, error) {
-	// Find non-empty communities 
+	// Find non-empty communities
 	validComms := make([]int, 0)
 	for c := 0; c < comm.NumCommunities; c++ {
 		if len(comm.CommunityNodes[c]) > 0 {
@@ -314,18 +312,28 @@ func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context
 	logger := config.CreateLogger()
 	
     var moveTracker *utils.MoveTracker
-    if config.EnableMoveTracking() {
-        moveTracker = utils.NewMoveTracker(config.TrackingOutputFile(), "scar")
+    if config.TrackMoves() {
+        moveTracker = utils.NewMoveTracker(config.OutputFile(), "scar")
         defer moveTracker.Close()
     }
 
+    storeGraphs := config.StoreGraphsAtEachLevel()
+
+    logger.Info().
+        Str("graph_file", graphFile).
+        Str("properties_file", propertiesFile).
+        Str("path_file", pathFile).
+        Bool("store_graphs", storeGraphs).  // Log the setting, random seed
+		Int("max_iterations", config.MaxIterations()).
+        Msg("Starting SCAR algorithm")
+
 	logger.Info().
-		Str("graph_file", graphFile).
-		Str("properties_file", propertiesFile).
-		Str("path_file", pathFile).
-		Msg("Starting SCAR algorithm")
+		Int("max_levels", config.MaxLevels()).
+		Float64("min_modularity_gain", config.MinModularityGain()).
+		Int64("random_seed", config.RandomSeed()).
+		Msg("Configuration parameters")
 	
-	// SCAR-SPECIFIC: Sketch preprocessing
+	// Sketch preprocessing
     graph, nodeMapping, err := BuildSketchGraph(graphFile, propertiesFile, pathFile, config, logger)
     if err != nil {
         return nil, fmt.Errorf("sketch preprocessing failed: %w", err)
@@ -367,6 +375,7 @@ func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context
 			Float64("initial_modularity", initialMod).
 			Msg("Starting level")
 		
+		// currentGraph.PrintDebug()
 		// Phase 1: Local optimization
 		improvement, moves, err := OneLevel(currentGraph, comm, config, logger, moveTracker)
 		if err != nil {
@@ -389,21 +398,24 @@ func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context
 			SuperNodeToCommunity: make(map[int]int),
 		}
 		
-		// Build communities map using ORIGINAL node IDs
+        // We store a reference since sketch state is immutable at this point
+        if storeGraphs {
+            levelInfo.SketchGraph = currentGraph
+            logger.Debug().
+                Int("level", level).
+                Int("stored_nodes", levelInfo.SketchGraph.NumNodes).
+                Float64("stored_weight", levelInfo.SketchGraph.TotalWeight).
+                Msg("Stored level sketch graph")
+        }
+
+		// Build communities map using CURRENT LEVEL node IDs
 		for c := 0; c < comm.NumCommunities; c++ {
 			if len(comm.CommunityNodes[c]) > 0 {
-				originalNodes := make([]int, 0)
-				
-				// For each super-node in this community, get original nodes
-				for _, superNode := range comm.CommunityNodes[c] {
-					originalNodes = append(originalNodes, nodeToOriginal[superNode]...)
-				}
-				
-				if len(originalNodes) > 0 {
-					levelInfo.Communities[c] = originalNodes
-				}
+				levelInfo.Communities[c] = make([]int, len(comm.CommunityNodes[c]))
+				copy(levelInfo.Communities[c], comm.CommunityNodes[c])
 			}
 		}
+		
 		levelInfo.NumCommunities = len(levelInfo.Communities)
 		
 		result.Levels = append(result.Levels, levelInfo)
@@ -495,6 +507,12 @@ func Run(graphFile, propertiesFile, pathFile string, config *Config, ctx context
         result.FinalCommunities[originalNode] = finalCommID
     }
     result.NodeMapping = nodeMapping
+	
+    if storeGraphs {
+        logger.Info().
+            Int("levels_stored", len(result.Levels)).
+            Msg("Sketch graph storage completed")
+    }
 	
 	logger.Info().
 		Int("levels", result.NumLevels).
@@ -642,4 +660,306 @@ func (c *Community) GetAllCommunitySketchIDs() []int {
 		ids = append(ids, commID)
 	}
 	return ids
+}
+
+
+
+// PrintFullResult prints the complete Result structure in a nicely formatted way for debugging
+func (r *Result) PrintFullResult() {
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+	fmt.Println("                           SCAR ALGORITHM RESULT")
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+	
+	// High-level summary
+	r.printSummary()
+	
+	// Detailed level information
+	r.printLevels()
+	
+	// Final communities
+	r.printFinalCommunities()
+	
+	// Statistics
+	r.printStatistics()
+	
+	// Node mapping
+	r.printNodeMapping()
+	
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+	fmt.Println("                            END OF RESULT")
+	fmt.Println("=" + strings.Repeat("=", 78) + "=")
+}
+
+// printSummary prints high-level summary information
+func (r *Result) printSummary() {
+	fmt.Println("\n📊 SUMMARY")
+	fmt.Println(strings.Repeat("-", 50))
+	fmt.Printf("  Number of Levels:     %d\n", r.NumLevels)
+	fmt.Printf("  Final Modularity:     %.6f\n", r.Modularity)
+	fmt.Printf("  Total Runtime:        %d ms (%.2f seconds)\n", r.Statistics.RuntimeMS, float64(r.Statistics.RuntimeMS)/1000.0)
+	fmt.Printf("  Total Moves:          %d\n", r.Statistics.TotalMoves)
+	fmt.Printf("  Total Iterations:     %d\n", r.Statistics.TotalIterations)
+	fmt.Printf("  Peak Memory Usage:    %d MB\n", r.Statistics.MemoryPeakMB)
+	fmt.Printf("  Final Communities:    %d\n", len(r.FinalCommunities))
+	
+	if r.NodeMapping != nil {
+		fmt.Printf("  Target Nodes:         %d\n", r.NodeMapping.NumTargetNodes)
+		fmt.Printf("  Original Nodes:       %d\n", len(r.NodeMapping.CompressedToOriginal))
+	}
+}
+
+// printLevels prints detailed information for each level
+func (r *Result) printLevels() {
+	fmt.Println("\n🏗️  HIERARCHICAL LEVELS")
+	fmt.Println(strings.Repeat("-", 50))
+	
+	if len(r.Levels) == 0 {
+		fmt.Println("  No levels found!")
+		return
+	}
+	
+	for i, level := range r.Levels {
+		fmt.Printf("\n  📍 LEVEL %d\n", level.Level)
+		fmt.Printf("    ├─ Communities:       %d\n", level.NumCommunities)
+		fmt.Printf("    ├─ Modularity:        %.6f\n", level.Modularity)
+		fmt.Printf("    ├─ Moves:             %d\n", level.NumMoves)
+		fmt.Printf("    └─ Runtime:           %d ms\n", level.RuntimeMS)
+		
+		// Print communities with their nodes
+		if len(level.Communities) > 0 {
+			fmt.Printf("    \n    🏘️  Communities Detail:\n")
+			
+			// Sort community IDs for consistent output
+			commIDs := make([]int, 0, len(level.Communities))
+			for commID := range level.Communities {
+				commIDs = append(commIDs, commID)
+			}
+			sort.Ints(commIDs)
+			
+			for _, commID := range commIDs {
+				nodes := level.Communities[commID]
+				fmt.Printf("      Community %d (%d nodes): ", commID, len(nodes))
+				
+				// Print first 10 nodes, then summarize if more
+				if len(nodes) <= 10 {
+					fmt.Printf("%v\n", nodes)
+				} else {
+					fmt.Printf("%v ... (+%d more)\n", nodes[:10], len(nodes)-10)
+				}
+			}
+		}
+		
+		// Print hierarchy mappings if available
+		if len(level.CommunityToSuperNode) > 0 {
+			fmt.Printf("    \n    🔗 Community → Super-node Mapping:\n")
+			commIDs := make([]int, 0, len(level.CommunityToSuperNode))
+			for commID := range level.CommunityToSuperNode {
+				commIDs = append(commIDs, commID)
+			}
+			sort.Ints(commIDs)
+			
+			for _, commID := range commIDs {
+				superNodeID := level.CommunityToSuperNode[commID]
+				fmt.Printf("      Community %d → Super-node %d\n", commID, superNodeID)
+			}
+		}
+		
+		if len(level.SuperNodeToCommunity) > 0 {
+			fmt.Printf("    \n    🔗 Super-node → Community Mapping:\n")
+			superNodeIDs := make([]int, 0, len(level.SuperNodeToCommunity))
+			for superNodeID := range level.SuperNodeToCommunity {
+				superNodeIDs = append(superNodeIDs, superNodeID)
+			}
+			sort.Ints(superNodeIDs)
+			
+			for _, superNodeID := range superNodeIDs {
+				commID := level.SuperNodeToCommunity[superNodeID]
+				fmt.Printf("      Super-node %d → Community %d\n", superNodeID, commID)
+			}
+		}
+		
+		// Print sketch graph info if available
+		if level.SketchGraph != nil {
+			fmt.Printf("    \n    📈 Sketch Graph Info:\n")
+			fmt.Printf("      ├─ Nodes:             %d\n", level.SketchGraph.NumNodes)
+			fmt.Printf("      ├─ Total Weight:      %.2f\n", level.SketchGraph.TotalWeight)
+			
+			if level.SketchGraph.sketchManager != nil {
+				fmt.Printf("      ├─ Sketch K:          %d\n", level.SketchGraph.sketchManager.k)
+				fmt.Printf("      ├─ Sketch NK:         %d\n", level.SketchGraph.sketchManager.nk)
+				fmt.Printf("      ├─ Vertex Sketches:   %d\n", len(level.SketchGraph.sketchManager.vertexSketches))
+				fmt.Printf("      └─ Hash Mappings:     %d\n", len(level.SketchGraph.sketchManager.hashToNodeMap))
+			}
+		}
+		
+		// Add separator between levels
+		if i < len(r.Levels)-1 {
+			fmt.Println("    " + strings.Repeat("─", 40))
+		}
+	}
+}
+
+// printFinalCommunities prints the final community assignments
+func (r *Result) printFinalCommunities() {
+	fmt.Println("\n🎯 FINAL COMMUNITIES")
+	fmt.Println(strings.Repeat("-", 50))
+	
+	if len(r.FinalCommunities) == 0 {
+		fmt.Println("  No final communities found!")
+		return
+	}
+	
+	// Group nodes by community
+	commToNodes := make(map[int][]int)
+	for nodeID, commID := range r.FinalCommunities {
+		commToNodes[commID] = append(commToNodes[commID], nodeID)
+	}
+	
+	// Sort communities by ID
+	commIDs := make([]int, 0, len(commToNodes))
+	for commID := range commToNodes {
+		commIDs = append(commIDs, commID)
+	}
+	sort.Ints(commIDs)
+	
+	fmt.Printf("  Total Communities: %d\n", len(commToNodes))
+	fmt.Printf("  Total Nodes:       %d\n\n", len(r.FinalCommunities))
+	
+	for _, commID := range commIDs {
+		nodes := commToNodes[commID]
+		sort.Ints(nodes) // Sort nodes within community
+		
+		fmt.Printf("  Community %d (%d nodes): ", commID, len(nodes))
+		if len(nodes) <= 15 {
+			fmt.Printf("%v\n", nodes)
+		} else {
+			fmt.Printf("%v ... (+%d more)\n", nodes[:15], len(nodes)-15)
+		}
+	}
+}
+
+// printStatistics prints detailed statistics
+func (r *Result) printStatistics() {
+	fmt.Println("\n📈 STATISTICS")
+	fmt.Println(strings.Repeat("-", 50))
+	
+	stats := &r.Statistics
+	fmt.Printf("  Overall Performance:\n")
+	fmt.Printf("    ├─ Total Runtime:     %d ms (%.2f seconds)\n", stats.RuntimeMS, float64(stats.RuntimeMS)/1000.0)
+	fmt.Printf("    ├─ Total Iterations:  %d\n", stats.TotalIterations)
+	fmt.Printf("    ├─ Total Moves:       %d\n", stats.TotalMoves)
+	fmt.Printf("    └─ Peak Memory:       %d MB\n", stats.MemoryPeakMB)
+	
+	if len(stats.LevelStats) > 0 {
+		fmt.Printf("\n  Per-Level Statistics:\n")
+		fmt.Printf("    %-5s %-6s %-8s %-12s %-12s %-10s\n", "Level", "Iter", "Moves", "Init Mod", "Final Mod", "Time(ms)")
+		fmt.Printf("    %s\n", strings.Repeat("─", 65))
+		
+		for _, levelStat := range stats.LevelStats {
+			fmt.Printf("    %-5d %-6d %-8d %-12.6f %-12.6f %-10d\n",
+				levelStat.Level,
+				levelStat.Iterations,
+				levelStat.Moves,
+				levelStat.InitialModularity,
+				levelStat.FinalModularity,
+				levelStat.RuntimeMS)
+		}
+		
+		// Calculate some derived statistics
+		fmt.Printf("\n  Derived Statistics:\n")
+		
+		totalLevelTime := int64(0)
+		maxModularityGain := 0.0
+		for _, levelStat := range stats.LevelStats {
+			totalLevelTime += levelStat.RuntimeMS
+			gain := levelStat.FinalModularity - levelStat.InitialModularity
+			if gain > maxModularityGain {
+				maxModularityGain = gain
+			}
+		}
+		
+		fmt.Printf("    ├─ Avg time per level:    %.1f ms\n", float64(totalLevelTime)/float64(len(stats.LevelStats)))
+		fmt.Printf("    ├─ Max modularity gain:   %.6f\n", maxModularityGain)
+		fmt.Printf("    └─ Avg moves per level:   %.1f\n", float64(stats.TotalMoves)/float64(len(stats.LevelStats)))
+	}
+}
+
+// printNodeMapping prints node mapping information
+func (r *Result) printNodeMapping() {
+	fmt.Println("\n🗂️  NODE MAPPING")
+	fmt.Println(strings.Repeat("-", 50))
+	
+	if r.NodeMapping == nil {
+		fmt.Println("  No node mapping available!")
+		return
+	}
+	
+	mapping := r.NodeMapping
+	fmt.Printf("  Target Nodes:         %d\n", mapping.NumTargetNodes)
+	fmt.Printf("  Mapped Nodes:         %d\n", len(mapping.OriginalToCompressed))
+	fmt.Printf("  Compression Ratio:    %.2f%%\n", 
+		float64(mapping.NumTargetNodes)/float64(len(mapping.OriginalToCompressed))*100.0)
+	
+	// Show sample mappings
+	if len(mapping.OriginalToCompressed) > 0 {
+		fmt.Printf("\n  Sample Original → Compressed Mappings:\n")
+		
+		// Get first 10 mappings in sorted order
+		originalIDs := make([]int, 0, len(mapping.OriginalToCompressed))
+		for originalID := range mapping.OriginalToCompressed {
+			originalIDs = append(originalIDs, originalID)
+		}
+		sort.Ints(originalIDs)
+		
+		count := 0
+		for _, originalID := range originalIDs {
+			if count >= 10 {
+				fmt.Printf("    ... (+%d more mappings)\n", len(originalIDs)-10)
+				break
+			}
+			compressedID := mapping.OriginalToCompressed[originalID]
+			fmt.Printf("    %d → %d\n", originalID, compressedID)
+			count++
+		}
+	}
+	
+	// Show sample reverse mappings
+	if len(mapping.CompressedToOriginal) > 0 {
+		fmt.Printf("\n  Sample Compressed → Original Mappings:\n")
+		
+		maxShow := 10
+		if len(mapping.CompressedToOriginal) < maxShow {
+			maxShow = len(mapping.CompressedToOriginal)
+		}
+		
+		for i := 0; i < maxShow; i++ {
+			fmt.Printf("    %d → %d\n", i, mapping.CompressedToOriginal[i])
+		}
+		
+		if len(mapping.CompressedToOriginal) > 10 {
+			fmt.Printf("    ... (+%d more mappings)\n", len(mapping.CompressedToOriginal)-10)
+		}
+	}
+}
+
+// PrintResultSummary prints a condensed summary (useful for quick checks)
+func (r *Result) PrintResultSummary() {
+	fmt.Println("🔍 SCAR Result Summary:")
+	fmt.Printf("   Levels: %d | Final Modularity: %.6f | Runtime: %dms | Communities: %d\n",
+		r.NumLevels, r.Modularity, r.Statistics.RuntimeMS, len(r.FinalCommunities))
+}
+
+// PrintHierarchyPathsForNodes prints hierarchy paths for specific nodes (useful for debugging)
+func (r *Result) PrintHierarchyPathsForNodes(nodeIDs []int) {
+	fmt.Println("\n🛤️  HIERARCHY PATHS")
+	fmt.Println(strings.Repeat("-", 50))
+	
+	for _, nodeID := range nodeIDs {
+		path := r.GetHierarchyPath(nodeID)
+		communities := r.GetCommunityHierarchy(nodeID)
+		
+		fmt.Printf("  Node %d:\n", nodeID)
+		fmt.Printf("    Path:        %v\n", path)
+		fmt.Printf("    Communities: %v\n", communities)
+	}
 }

@@ -1,0 +1,1 @@
+go run main.go ..\dataset\data\dummy_graph.txt ..\dataset\data\dummy_properties.txt ..\dataset\data\dummy_path.txt    

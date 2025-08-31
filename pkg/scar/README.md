@@ -49,6 +49,9 @@ type Config struct {
     K()         int64   // sketch size (default: 10)
     NK()        int64   // number of sketch layers (default: 4)
     Threshold() float64 // sketch fullness threshold (default: 0.5)
+    
+    // Graph storage
+    StoreGraphsAtEachLevel() bool // store SketchGraph objects (default: false)
 }
 ```
 
@@ -64,6 +67,22 @@ type Result struct {
     NodeMapping      *NodeMapping    // original to compressed mapping
 }
 
+type LevelInfo struct {
+    Level          int             // hierarchy level
+    Communities    map[int][]int   // communityID -> [originalNodeIDs]
+    Modularity     float64         // modularity at this level
+    NumCommunities int            // number of communities
+    NumMoves       int            // node moves in this level
+    RuntimeMS      int64          // level runtime
+    
+    // Hierarchy tracking
+    CommunityToSuperNode map[int]int // community -> super-node mapping
+    SuperNodeToCommunity map[int]int // super-node -> community mapping
+    
+    // Graph storage (only if StoreGraphsAtEachLevel=true)
+    SketchGraph *SketchGraph `json:"-"` // sketch graph at this level
+}
+
 type NodeMapping struct {
     OriginalToCompressed map[int]int  // original -> compressed node IDs
     CompressedToOriginal []int        // compressed -> original node IDs
@@ -74,34 +93,34 @@ type NodeMapping struct {
 ## Usage Example
 
 ```go
-// Prepare input files
-graphFile := "graph.txt"
-propertiesFile := "properties.txt" 
-pathFile := "path.txt"
-
-// Configure algorithm
+// Basic usage
 config := scar.NewConfig()
-config.Set("scar.k", 64)           // sketch size
-config.Set("scar.nk", 8)           // sketch layers
+config.Set("scar.k", 64)
 config.Set("algorithm.max_levels", 5)
 
-// Run clustering
-ctx := context.Background()
 result, err := scar.Run(graphFile, propertiesFile, pathFile, config, ctx)
 if err != nil {
     log.Fatal(err)
 }
 
-// Access results
 fmt.Printf("Final modularity: %.4f\n", result.Modularity)
-fmt.Printf("Target nodes processed: %d\n", result.NodeMapping.NumTargetNodes)
-
-// Get community for original node ID
 community := result.FinalCommunities[originalNodeID]
+```
 
-// Map between original and compressed IDs
-compressedID := result.NodeMapping.OriginalToCompressed[originalNodeID]
-originalID := result.NodeMapping.CompressedToOriginal[compressedID]
+### Graph Storage
+```go
+// Enable graph storage
+config.Set("output.store_graphs_at_each_level", true)
+
+result, err := scar.Run(graphFile, propertiesFile, pathFile, config, ctx)
+
+// Access stored graphs
+for level, levelInfo := range result.Levels {
+    if levelInfo.SketchGraph != nil {
+        degree := levelInfo.SketchGraph.GetDegree(node)
+        neighbors, weights := levelInfo.SketchGraph.GetNeighbors(node)
+    }
+}
 ```
 
 ## Key Differences from Louvain
@@ -111,6 +130,7 @@ originalID := result.NodeMapping.CompressedToOriginal[compressedID]
 3. **Scalability**: Uses probabilistic sketches for large graphs
 4. **Node Mapping**: Compresses graph to target nodes only
 5. **Accuracy**: Trades some accuracy for scalability
+6. **Graph Storage**: Stores `SketchGraph` objects with sketch-based operations
 
 ## Configuration Keys
 
@@ -122,6 +142,7 @@ originalID := result.NodeMapping.CompressedToOriginal[compressedID]
 | `algorithm.max_levels` | int | 10 | Maximum hierarchy levels |
 | `algorithm.max_iterations` | int | 100 | Max iterations per level |
 | `algorithm.min_modularity_gain` | float64 | 1e-6 | Minimum gain threshold |
+| `output.store_graphs_at_each_level` | bool | false | Store SketchGraph at each level |
 
 ## File Format Details
 
@@ -130,11 +151,3 @@ originalID := result.NodeMapping.CompressedToOriginal[compressedID]
 **Properties File**: Maps each node to a type ID. Nodes not in file default to type 0.
 
 **Path File**: Defines the sequence of node types to consider. SCAR processes nodes matching the first type in the path.
-
-## Performance Notes
-
-- Use larger `k` values (64-512) for better accuracy
-- Use multiple layers (`nk` = 4-8) for robust estimation  
-- SCAR is designed for graphs with millions of nodes
-- Memory usage scales with sketch size, not graph size
-
